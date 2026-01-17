@@ -1,0 +1,53 @@
+{
+  "name": "talos-procurement-ai",
+  "version": "1.0.0",
+  "description": "Comprehensive University Procurement AI Platform",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "convex:dev": "convex dev",
+    "convex:deploy": "convex deploy",
+    "temporal:worker": "tsx src/temporal/worker.ts",
+    "test": "vitest",
+    "lint": "eslint src --ext .ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@hono/node-server": "^1.13.0",
+    "@hono/zod-validator": "^0.4.0",
+    "@langchain/anthropic": "^0.3.0",
+    "@langchain/community": "^0.3.0",
+    "@langchain/core": "^0.3.0",
+    "@langchain/langgraph": "^0.2.0",
+    "@temporalio/client": "^1.11.0",
+    "@temporalio/worker": "^1.11.0",
+    "@temporalio/workflow": "^1.11.0",
+    "@temporalio/activity": "^1.11.0",
+    "convex": "^1.17.0",
+    "hono": "^4.6.0",
+    "zod": "^3.23.0",
+    "uuid": "^10.0.0",
+    "date-fns": "^4.1.0",
+    "lodash-es": "^4.17.21",
+    "ml-matrix": "^6.11.0",
+    "simple-statistics": "^7.8.0",
+    "natural": "^8.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/uuid": "^10.0.0",
+    "@types/lodash-es": "^4.17.12",
+    "typescript": "^5.6.0",
+    "tsx": "^4.19.0",
+    "vitest": "^2.1.0",
+    "eslint": "^9.12.0",
+    "@typescript-eslint/eslint-plugin": "^8.0.0",
+    "@typescript-eslint/parser": "^8.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
