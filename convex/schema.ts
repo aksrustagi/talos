@@ -1118,6 +1118,161 @@ export default defineSchema({
     .index("by_phase", ["phase"]),
 
   // ============================================
+  // SPEND ANALYTICS
+  // ============================================
+
+  // Spending Categories for classification
+  spendingCategories: defineTable({
+    universityId: v.id("universities"),
+    code: v.string(),
+    name: v.string(),
+    description: v.string(),
+    parentCategoryId: v.optional(v.id("spendingCategories")),
+    annualBudget: v.number(),
+    percentOfTotalTarget: v.number(),
+    glCodePrefix: v.optional(v.string()),
+    unspscCodes: v.array(v.string()),
+    diversityTargetPercent: v.optional(v.number()),
+    sustainabilityTargetPercent: v.optional(v.number()),
+    isActive: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_code", ["universityId", "code"])
+    .index("by_parent", ["parentCategoryId"]),
+
+  // Cost Centers for budget allocation tracking
+  costCenters: defineTable({
+    universityId: v.id("universities"),
+    code: v.string(),
+    name: v.string(),
+    department: v.string(),
+    managerId: v.optional(v.id("users")),
+    parentCostCenterId: v.optional(v.id("costCenters")),
+    fiscalYear: v.number(),
+    allocatedBudget: v.number(),
+    spentAmount: v.number(),
+    committedAmount: v.number(),
+    availableAmount: v.number(),
+    utilizationPercent: v.number(),
+    spendingLimit: v.optional(v.number()),
+    requiresApprovalAbove: v.optional(v.number()),
+    isActive: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_code", ["universityId", "code"])
+    .index("by_department", ["universityId", "department"])
+    .index("by_manager", ["managerId"])
+    .index("by_parent", ["parentCostCenterId"]),
+
+  // Spend Snapshots for historical tracking
+  spendSnapshots: defineTable({
+    universityId: v.id("universities"),
+    snapshotDate: v.number(),
+    granularity: v.union(
+      v.literal("daily"),
+      v.literal("weekly"),
+      v.literal("monthly"),
+      v.literal("quarterly"),
+      v.literal("yearly")
+    ),
+    totalSpend: v.number(),
+    orderCount: v.number(),
+    vendorCount: v.number(),
+    diverseSpendAmount: v.number(),
+    diverseSpendPercent: v.number(),
+    sustainableSpendAmount: v.number(),
+    sustainableSpendPercent: v.number(),
+    savingsAmount: v.number(),
+    savingsPercent: v.number(),
+    avgOrderValue: v.number(),
+    categoryBreakdown: v.array(
+      v.object({
+        categoryCode: v.string(),
+        categoryName: v.string(),
+        amount: v.number(),
+        percentOfTotal: v.number(),
+      })
+    ),
+    departmentBreakdown: v.array(
+      v.object({
+        department: v.string(),
+        amount: v.number(),
+        percentOfTotal: v.number(),
+      })
+    ),
+    topVendors: v.array(
+      v.object({
+        vendorId: v.string(),
+        vendorName: v.string(),
+        amount: v.number(),
+        isDiverse: v.boolean(),
+      })
+    ),
+    createdAt: v.number(),
+  })
+    .index("by_university", ["universityId", "snapshotDate"])
+    .index("by_granularity", ["universityId", "granularity", "snapshotDate"]),
+
+  // Diversity Spend Targets and Tracking
+  diversitySpendTargets: defineTable({
+    universityId: v.id("universities"),
+    fiscalYear: v.number(),
+    diversityType: v.union(
+      v.literal("MWBE"),
+      v.literal("WBE"),
+      v.literal("MBE"),
+      v.literal("SBE"),
+      v.literal("SDVOSB"),
+      v.literal("HUBZone"),
+      v.literal("LGBT"),
+      v.literal("total_diverse")
+    ),
+    targetPercent: v.number(),
+    targetAmount: v.number(),
+    currentPercent: v.number(),
+    currentAmount: v.number(),
+    gapPercent: v.number(),
+    gapAmount: v.number(),
+    meetsTarget: v.boolean(),
+    lastCalculatedAt: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId", "fiscalYear"])
+    .index("by_type", ["universityId", "diversityType", "fiscalYear"]),
+
+  // Sustainability Spend Tracking
+  sustainabilitySpendTargets: defineTable({
+    universityId: v.id("universities"),
+    fiscalYear: v.number(),
+    category: v.union(
+      v.literal("renewable_energy"),
+      v.literal("recycled_materials"),
+      v.literal("carbon_neutral"),
+      v.literal("eco_certified"),
+      v.literal("local_sourcing"),
+      v.literal("total_sustainable")
+    ),
+    targetPercent: v.number(),
+    targetAmount: v.number(),
+    currentPercent: v.number(),
+    currentAmount: v.number(),
+    gapPercent: v.number(),
+    gapAmount: v.number(),
+    meetsTarget: v.boolean(),
+    carbonImpactKg: v.optional(v.number()),
+    lastCalculatedAt: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId", "fiscalYear"])
+    .index("by_category", ["universityId", "category", "fiscalYear"]),
+
+  // ============================================
   // AUDIT LOG
   // ============================================
 
