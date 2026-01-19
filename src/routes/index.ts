@@ -12,3 +12,4 @@ export { default as priceRoutes } from "./prices";
 export { default as agentRoutes } from "./agents";
 export { default as intelligenceRoutes } from "./intelligence";
 export { default as webhookRoutes } from "./webhooks";
+export { default as spendAnalyticsRoutes } from "./spendAnalytics";
