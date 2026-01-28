@@ -1571,12 +1571,125 @@ Target: 10x ROI minimum`,
   },
 };
 
+// ============================================
+// UNIMARKET INTEGRATION PROMPTS
+// ============================================
+
+export const UNIMARKET_CAPABILITIES = `
+## UniMarket Integration
+
+You have full access to UniMarket marketplace capabilities:
+
+### Product Catalog
+- Search products across all UniMarket vendors
+- Get detailed product information and specifications
+- Compare prices across vendors
+- Check real-time availability and lead times
+- Access contract pricing and volume discounts
+
+### Shopping & Ordering
+- Create and manage shopping carts
+- Add items from multiple vendors
+- Submit carts for requisition/approval
+- Track order status and shipments
+- Cancel orders when needed
+
+### Invoice Processing
+- Retrieve and match invoices (three-way match)
+- Approve or dispute invoices
+- Track payment status
+- Capture early payment discounts
+
+### Vendor Management
+- List and filter vendors by category, diversity status, certifications
+- Get vendor performance metrics
+- Access contract information and pricing
+
+### Analytics & Reporting
+- Pull spend reports by vendor, category, department
+- Get savings reports showing contract and volume discount savings
+- Track diversity and sustainability spend
+
+### UniMarket Tools Available
+- unimarket_search_products: Search the UniMarket catalog
+- unimarket_get_product: Get product details
+- unimarket_get_product_pricing: Get pricing with volume discounts
+- unimarket_compare_prices: Compare across vendors
+- unimarket_create_cart: Create shopping cart
+- unimarket_add_to_cart: Add items to cart
+- unimarket_submit_cart: Submit for ordering
+- unimarket_get_purchase_order: Get PO details
+- unimarket_list_purchase_orders: List POs with filters
+- unimarket_track_order: Get tracking info
+- unimarket_get_invoice: Get invoice details
+- unimarket_match_invoice: Three-way match
+- unimarket_approve_invoice: Approve for payment
+- unimarket_list_vendors: List vendors
+- unimarket_get_vendor_performance: Get vendor metrics
+- unimarket_check_inventory: Check availability
+- unimarket_get_contract_price: Get contract pricing
+- unimarket_get_spend_report: Get spend analytics
+- unimarket_get_savings_report: Get savings data
+- unimarket_initiate_punchout: Start vendor PunchOut session
+- unimarket_sync_catalog: Trigger catalog sync
+
+When helping users, always leverage UniMarket for:
+1. Product searches and price comparisons
+2. Order placement and tracking
+3. Invoice processing and matching
+4. Vendor evaluation and selection
+5. Spend and savings analytics
+`;
+
+// Agents that get UniMarket capabilities
+export const UNIMARKET_ENABLED_AGENTS = [
+  "price-watch",
+  "catalog-sync",
+  "price-compare",
+  "knowledge-graph",
+  "historical-price",
+  "contract-validator",
+  "requisition",
+  "approval-workflow",
+  "vendor-selection",
+  "rfq-rfp",
+  "po-generation",
+  "invoice-matching",
+  "receipt-delivery",
+  "payment-optimizer",
+  "lab-supply",
+  "it-equipment",
+  "office-supply",
+  "furniture",
+  "facilities",
+  "marketing",
+  "travel",
+  "professional-services",
+  "medical-supply",
+  "capital-projects",
+  "food-service",
+  "spend-analytics",
+  "budget-guardian",
+  "compliance-agent",
+  "supplier-diversity",
+  "sustainability-agent",
+  "risk-vendor-health",
+  "contract-lifecycle",
+  "savings-tracker",
+];
+
 // Helper function to get agent prompt
-export function getAgentPrompt(agentId: string): string {
+export function getAgentPrompt(agentId: string, includeUnimarket: boolean = true): string {
   const agent = AGENT_PROMPTS[agentId];
   if (!agent) {
     throw new Error(`Unknown agent: ${agentId}`);
   }
+
+  // Add UniMarket capabilities for enabled agents
+  if (includeUnimarket && UNIMARKET_ENABLED_AGENTS.includes(agentId)) {
+    return agent.prompt + UNIMARKET_CAPABILITIES;
+  }
+
   return agent.prompt;
 }
 

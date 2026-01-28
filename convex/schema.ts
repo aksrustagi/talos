@@ -1294,4 +1294,333 @@ export default defineSchema({
     .index("by_entity", ["entityType", "entityId"])
     .index("by_user", ["userId"])
     .index("by_action", ["action"]),
+
+  // ============================================
+  // UNIMARKET INTEGRATION
+  // ============================================
+
+  // UniMarket Configuration per University
+  unimarketConfigurations: defineTable({
+    universityId: v.id("universities"),
+    apiKey: v.string(),
+    apiSecretRef: v.string(), // Reference to secure storage
+    organizationId: v.string(),
+    environment: v.union(v.literal("sandbox"), v.literal("production")),
+    webhookSecret: v.optional(v.string()),
+    baseUrl: v.string(),
+    isActive: v.boolean(),
+    lastSyncAt: v.optional(v.number()),
+    syncStatus: v.union(
+      v.literal("idle"),
+      v.literal("syncing"),
+      v.literal("error"),
+      v.literal("success")
+    ),
+    syncErrorMessage: v.optional(v.string()),
+    settings: v.object({
+      autoSyncEnabled: v.boolean(),
+      syncIntervalMinutes: v.number(),
+      priceAlertThreshold: v.number(),
+      inventoryAlertEnabled: v.boolean(),
+    }),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_active", ["isActive"]),
+
+  // UniMarket Shopping Carts
+  unimarketCarts: defineTable({
+    universityId: v.id("universities"),
+    userId: v.id("users"),
+    unimarketCartId: v.string(), // Cart ID from UniMarket
+    status: v.union(
+      v.literal("active"),
+      v.literal("submitted"),
+      v.literal("expired"),
+      v.literal("abandoned")
+    ),
+    items: v.array(
+      v.object({
+        productId: v.string(),
+        sku: v.string(),
+        name: v.string(),
+        quantity: v.number(),
+        unitPrice: v.number(),
+        extendedPrice: v.number(),
+        currency: v.string(),
+        unitOfMeasure: v.string(),
+        vendorId: v.optional(v.string()),
+        vendorName: v.optional(v.string()),
+        notes: v.optional(v.string()),
+      })
+    ),
+    subtotal: v.number(),
+    currency: v.string(),
+    expiresAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_user", ["userId", "status"])
+    .index("by_unimarket_id", ["unimarketCartId"]),
+
+  // UniMarket PunchOut Sessions
+  unimarketPunchoutSessions: defineTable({
+    universityId: v.id("universities"),
+    userId: v.id("users"),
+    sessionId: v.string(),
+    vendorId: v.string(),
+    vendorName: v.string(),
+    sessionUrl: v.string(),
+    returnUrl: v.string(),
+    status: v.union(
+      v.literal("active"),
+      v.literal("completed"),
+      v.literal("expired"),
+      v.literal("cancelled")
+    ),
+    operation: v.union(
+      v.literal("create"),
+      v.literal("edit"),
+      v.literal("inspect")
+    ),
+    resultCartId: v.optional(v.id("unimarketCarts")),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+    completedAt: v.optional(v.number()),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_user", ["userId"])
+    .index("by_session", ["sessionId"])
+    .index("by_status", ["status"]),
+
+  // UniMarket Catalog Sync Jobs
+  unimarketCatalogSyncs: defineTable({
+    universityId: v.id("universities"),
+    syncId: v.string(),
+    vendorId: v.optional(v.string()),
+    syncType: v.union(v.literal("full"), v.literal("incremental")),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("in_progress"),
+      v.literal("completed"),
+      v.literal("failed")
+    ),
+    progress: v.number(), // 0-100
+    stats: v.object({
+      productsProcessed: v.number(),
+      productsAdded: v.number(),
+      productsUpdated: v.number(),
+      productsRemoved: v.number(),
+      priceChanges: v.number(),
+      errors: v.number(),
+    }),
+    errorMessages: v.array(v.string()),
+    startedAt: v.number(),
+    completedAt: v.optional(v.number()),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_sync_id", ["syncId"])
+    .index("by_status", ["status"]),
+
+  // UniMarket Webhook Events
+  unimarketWebhookEvents: defineTable({
+    universityId: v.id("universities"),
+    eventId: v.string(),
+    eventType: v.string(),
+    payload: v.any(),
+    status: v.union(
+      v.literal("received"),
+      v.literal("processing"),
+      v.literal("processed"),
+      v.literal("failed")
+    ),
+    processingNotes: v.optional(v.string()),
+    errorMessage: v.optional(v.string()),
+    relatedEntityType: v.optional(v.string()),
+    relatedEntityId: v.optional(v.string()),
+    receivedAt: v.number(),
+    processedAt: v.optional(v.number()),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_event_id", ["eventId"])
+    .index("by_event_type", ["eventType"])
+    .index("by_status", ["status"]),
+
+  // UniMarket Order Transmissions
+  unimarketOrderTransmissions: defineTable({
+    universityId: v.id("universities"),
+    purchaseOrderId: v.id("purchaseOrders"),
+    transmissionId: v.string(),
+    method: v.union(
+      v.literal("api"),
+      v.literal("cxml"),
+      v.literal("email")
+    ),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("sent"),
+      v.literal("confirmed"),
+      v.literal("failed")
+    ),
+    vendorConfirmationNumber: v.optional(v.string()),
+    cxmlPayload: v.optional(v.string()),
+    responsePayload: v.optional(v.string()),
+    errorMessage: v.optional(v.string()),
+    retryCount: v.number(),
+    sentAt: v.optional(v.number()),
+    confirmedAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_po", ["purchaseOrderId"])
+    .index("by_transmission_id", ["transmissionId"])
+    .index("by_status", ["status"]),
+
+  // UniMarket Product Mappings (local product to UniMarket product)
+  unimarketProductMappings: defineTable({
+    productId: v.id("products"),
+    unimarketProductId: v.string(),
+    unimarketSku: v.string(),
+    vendorId: v.string(),
+    vendorName: v.string(),
+    lastPrice: v.number(),
+    lastPriceDate: v.number(),
+    availability: v.union(
+      v.literal("in_stock"),
+      v.literal("limited"),
+      v.literal("backorder"),
+      v.literal("out_of_stock"),
+      v.literal("discontinued")
+    ),
+    leadTimeDays: v.number(),
+    contractPrice: v.optional(v.number()),
+    contractId: v.optional(v.string()),
+    isBestPrice: v.boolean(),
+    lastSyncedAt: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_product", ["productId"])
+    .index("by_unimarket_product", ["unimarketProductId"])
+    .index("by_vendor", ["vendorId"])
+    .index("by_best_price", ["productId", "isBestPrice"]),
+
+  // UniMarket Contract Tracking
+  unimarketContracts: defineTable({
+    universityId: v.id("universities"),
+    vendorId: v.id("vendors"),
+    unimarketContractId: v.string(),
+    contractName: v.string(),
+    contractType: v.string(),
+    status: v.union(
+      v.literal("active"),
+      v.literal("expired"),
+      v.literal("pending")
+    ),
+    startDate: v.number(),
+    endDate: v.number(),
+    baseDiscount: v.number(),
+    categoryDiscounts: v.array(
+      v.object({
+        category: v.string(),
+        discountPercent: v.number(),
+      })
+    ),
+    terms: v.object({
+      paymentTerms: v.string(),
+      shippingTerms: v.string(),
+      minimumOrder: v.optional(v.number()),
+    }),
+    spendYtd: v.number(),
+    spendCommitment: v.optional(v.number()),
+    utilizationRate: v.number(),
+    lastSyncedAt: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_vendor", ["vendorId"])
+    .index("by_unimarket_id", ["unimarketContractId"])
+    .index("by_status", ["status"])
+    .index("by_end_date", ["endDate"]),
+
+  // UniMarket Spend Analytics Cache
+  unimarketSpendAnalytics: defineTable({
+    universityId: v.id("universities"),
+    periodType: v.union(
+      v.literal("daily"),
+      v.literal("weekly"),
+      v.literal("monthly"),
+      v.literal("quarterly"),
+      v.literal("yearly")
+    ),
+    periodStart: v.number(),
+    periodEnd: v.number(),
+    totalSpend: v.number(),
+    orderCount: v.number(),
+    avgOrderValue: v.number(),
+    vendorBreakdown: v.array(
+      v.object({
+        vendorId: v.string(),
+        vendorName: v.string(),
+        spend: v.number(),
+        orderCount: v.number(),
+        percentage: v.number(),
+      })
+    ),
+    categoryBreakdown: v.array(
+      v.object({
+        category: v.string(),
+        spend: v.number(),
+        percentage: v.number(),
+      })
+    ),
+    savingsFromContracts: v.number(),
+    savingsFromVolumeDiscounts: v.number(),
+    totalSavings: v.number(),
+    calculatedAt: v.number(),
+  })
+    .index("by_university", ["universityId", "periodType", "periodStart"])
+    .index("by_period", ["periodType", "periodStart"]),
+
+  // UniMarket Inventory Alerts
+  unimarketInventoryAlerts: defineTable({
+    universityId: v.id("universities"),
+    productId: v.id("products"),
+    unimarketProductId: v.string(),
+    alertType: v.union(
+      v.literal("out_of_stock"),
+      v.literal("low_stock"),
+      v.literal("back_in_stock"),
+      v.literal("discontinued"),
+      v.literal("lead_time_change")
+    ),
+    previousValue: v.optional(v.string()),
+    currentValue: v.string(),
+    severity: v.union(
+      v.literal("critical"),
+      v.literal("high"),
+      v.literal("medium"),
+      v.literal("low")
+    ),
+    isAcknowledged: v.boolean(),
+    acknowledgedBy: v.optional(v.id("users")),
+    acknowledgedAt: v.optional(v.number()),
+    alternativeProducts: v.array(
+      v.object({
+        productId: v.string(),
+        name: v.string(),
+        vendorId: v.string(),
+        price: v.number(),
+        availability: v.string(),
+      })
+    ),
+    createdAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_product", ["productId"])
+    .index("by_acknowledged", ["isAcknowledged"])
+    .index("by_severity", ["severity"]),
 });

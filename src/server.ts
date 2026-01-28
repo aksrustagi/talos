@@ -15,6 +15,7 @@ import { agentRoutes } from "./routes/agents";
 import { intelligenceRoutes } from "./routes/intelligence";
 import { webhookRoutes } from "./routes/webhooks";
 import { spendAnalyticsRoutes } from "./routes/spendAnalytics";
+import { unimarketRoutes } from "./routes/unimarket";
 
 // Middleware
 import { authMiddleware } from "./middleware/auth";
@@ -60,6 +61,7 @@ app.get("/", (c) => {
       intelligence: "/api/v1/intelligence",
       webhooks: "/api/v1/webhooks",
       spend: "/api/v1/spend",
+      unimarket: "/api/v1/unimarket",
     },
     pricing: {
       flat: "$30,000/month",
@@ -88,6 +90,7 @@ api.route("/agents", agentRoutes);
 api.route("/intelligence", intelligenceRoutes);
 api.route("/webhooks", webhookRoutes);
 api.route("/spend", spendAnalyticsRoutes);
+api.route("/unimarket", unimarketRoutes);
 
 // 404 handler
 app.notFound((c) => {
@@ -104,6 +107,7 @@ app.notFound((c) => {
         "/api/v1/agents",
         "/api/v1/intelligence",
         "/api/v1/spend",
+        "/api/v1/unimarket",
       ],
     },
     404
