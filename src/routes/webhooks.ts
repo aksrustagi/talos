@@ -1,7 +1,20 @@
 import { Hono } from "hono";
+import { serve } from "inngest/hono";
 import type { AppContext } from "../types/context";
+import { inngest } from "../inngest/client";
+import { allFunctions } from "../inngest/functions";
 
 export const webhookRoutes = new Hono<AppContext>();
+
+// Inngest handler - must be at /api/inngest
+webhookRoutes.on(
+  ["GET", "POST", "PUT"],
+  "/inngest",
+  serve({
+    client: inngest,
+    functions: allFunctions,
+  })
+);
 
 // POST /webhooks/vendor/:vendorCode/catalog - Receive catalog updates from vendors
 webhookRoutes.post("/vendor/:vendorCode/catalog", async (c) => {
@@ -295,7 +308,9 @@ webhookRoutes.get("/health", async (c) => {
       email_inbound: "active",
       erp_sync: "active",
       temporal_callback: "active",
+      inngest: "active",
     },
+    inngestFunctions: allFunctions.length,
     timestamp: new Date().toISOString(),
   });
 });

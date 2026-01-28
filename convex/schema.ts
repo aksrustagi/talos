@@ -1294,4 +1294,868 @@ export default defineSchema({
     .index("by_entity", ["entityType", "entityId"])
     .index("by_user", ["userId"])
     .index("by_action", ["action"]),
+
+  // ============================================
+  // PRODUCT MATCHING (Catalog Intelligence)
+  // ============================================
+
+  productMatches: defineTable({
+    sourceProductId: v.id("products"),
+    matchedProductId: v.id("products"),
+    matchType: v.union(
+      v.literal("exact"),
+      v.literal("equivalent"),
+      v.literal("substitute"),
+      v.literal("alternative")
+    ),
+    confidence: v.number(), // 0-1
+    matchCriteria: v.object({
+      nameMatch: v.number(),
+      specMatch: v.number(),
+      manufacturerMatch: v.boolean(),
+      categoryMatch: v.boolean(),
+    }),
+    verifiedBy: v.optional(v.id("users")),
+    verifiedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_source", ["sourceProductId"])
+    .index("by_matched", ["matchedProductId"])
+    .index("by_type", ["matchType"]),
+
+  // ============================================
+  // PRICE SNAPSHOTS (Price Discovery)
+  // ============================================
+
+  priceSnapshots: defineTable({
+    productId: v.id("products"),
+    vendorId: v.id("vendors"),
+    price: v.number(),
+    listPrice: v.number(),
+    contractPrice: v.optional(v.number()),
+    pricePerUnit: v.number(),
+    currency: v.string(),
+    source: v.union(
+      v.literal("catalog"),
+      v.literal("web_scrape"),
+      v.literal("api"),
+      v.literal("ai_call"),
+      v.literal("email"),
+      v.literal("manual")
+    ),
+    availability: v.optional(v.string()),
+    leadTimeDays: v.optional(v.number()),
+    capturedAt: v.number(),
+    metadata: v.optional(v.any()),
+  })
+    .index("by_product", ["productId", "capturedAt"])
+    .index("by_vendor", ["vendorId", "capturedAt"])
+    .index("by_product_vendor", ["productId", "vendorId", "capturedAt"]),
+
+  // Quote Requests (Price Discovery)
+  quoteRequests: defineTable({
+    universityId: v.id("universities"),
+    vendorId: v.id("vendors"),
+    status: v.union(
+      v.literal("draft"),
+      v.literal("sent"),
+      v.literal("responded"),
+      v.literal("expired"),
+      v.literal("accepted"),
+      v.literal("rejected")
+    ),
+    requestType: v.union(
+      v.literal("rfq"),
+      v.literal("rfp"),
+      v.literal("informal"),
+      v.literal("ai_call")
+    ),
+    lineItems: v.array(
+      v.object({
+        productId: v.optional(v.id("products")),
+        description: v.string(),
+        quantity: v.number(),
+        targetPrice: v.optional(v.number()),
+        quotedPrice: v.optional(v.number()),
+      })
+    ),
+    totalQuotedAmount: v.optional(v.number()),
+    validUntil: v.optional(v.number()),
+    notes: v.optional(v.string()),
+    attachments: v.array(v.string()),
+    sentAt: v.optional(v.number()),
+    respondedAt: v.optional(v.number()),
+    callId: v.optional(v.string()), // VAPI call ID if AI call
+    emailThreadId: v.optional(v.id("emailThreads")),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_vendor", ["vendorId"])
+    .index("by_status", ["status"]),
+
+  // ============================================
+  // VENDOR ASSESSMENTS (Vendor Intelligence)
+  // ============================================
+
+  vendorAssessments: defineTable({
+    vendorId: v.id("vendors"),
+    universityId: v.id("universities"),
+    assessmentType: v.union(
+      v.literal("new_vendor"),
+      v.literal("quarterly_review"),
+      v.literal("risk_assessment"),
+      v.literal("contract_renewal")
+    ),
+    status: v.union(
+      v.literal("pending"),
+      v.literal("in_progress"),
+      v.literal("completed"),
+      v.literal("requires_review")
+    ),
+    scores: v.object({
+      overall: v.number(),
+      financial: v.number(),
+      compliance: v.number(),
+      performance: v.number(),
+      risk: v.number(),
+    }),
+    financialHealth: v.object({
+      dnbRating: v.optional(v.string()),
+      creditScore: v.optional(v.number()),
+      yearsInBusiness: v.optional(v.number()),
+      annualRevenue: v.optional(v.number()),
+      publicCompany: v.boolean(),
+    }),
+    complianceStatus: v.object({
+      samRegistered: v.boolean(),
+      samUei: v.optional(v.string()),
+      samExpirationDate: v.optional(v.number()),
+      debarred: v.boolean(),
+      debarmentDetails: v.optional(v.string()),
+      insuranceVerified: v.boolean(),
+      w9OnFile: v.boolean(),
+    }),
+    diversityCertifications: v.array(
+      v.object({
+        type: v.string(),
+        certifyingBody: v.string(),
+        certificationNumber: v.optional(v.string()),
+        expirationDate: v.number(),
+        verified: v.boolean(),
+        documentUrl: v.optional(v.string()),
+      })
+    ),
+    riskFactors: v.array(
+      v.object({
+        factor: v.string(),
+        severity: v.union(
+          v.literal("low"),
+          v.literal("medium"),
+          v.literal("high"),
+          v.literal("critical")
+        ),
+        description: v.string(),
+        mitigationActions: v.array(v.string()),
+      })
+    ),
+    newsAlerts: v.array(
+      v.object({
+        headline: v.string(),
+        source: v.string(),
+        publishedAt: v.number(),
+        sentiment: v.union(
+          v.literal("positive"),
+          v.literal("neutral"),
+          v.literal("negative")
+        ),
+        relevanceScore: v.number(),
+        url: v.optional(v.string()),
+      })
+    ),
+    recommendations: v.array(v.string()),
+    assessedBy: v.optional(v.string()), // Agent ID or user ID
+    assessedAt: v.number(),
+    nextReviewDate: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_vendor", ["vendorId", "assessedAt"])
+    .index("by_university", ["universityId"])
+    .index("by_status", ["status"])
+    .index("by_next_review", ["nextReviewDate"]),
+
+  // ============================================
+  // COMPLIANCE CHECKS (Policy Compliance)
+  // ============================================
+
+  complianceChecks: defineTable({
+    universityId: v.id("universities"),
+    requisitionId: v.id("requisitions"),
+    workflowId: v.string(), // Temporal workflow ID
+    status: v.union(
+      v.literal("pending"),
+      v.literal("running"),
+      v.literal("compliant"),
+      v.literal("violation"),
+      v.literal("exception_pending"),
+      v.literal("exception_approved"),
+      v.literal("exception_rejected")
+    ),
+    checks: v.array(
+      v.object({
+        checkId: v.string(),
+        checkType: v.union(
+          v.literal("grant_restrictions"),
+          v.literal("spending_threshold"),
+          v.literal("vendor_compliance"),
+          v.literal("competitive_bidding"),
+          v.literal("policy_rule"),
+          v.literal("budget_availability"),
+          v.literal("approval_authority")
+        ),
+        status: v.union(
+          v.literal("passed"),
+          v.literal("failed"),
+          v.literal("warning"),
+          v.literal("skipped")
+        ),
+        details: v.any(),
+        checkedAt: v.number(),
+      })
+    ),
+    grantCompliance: v.optional(
+      v.object({
+        grantNumber: v.string(),
+        fundingAgency: v.string(),
+        allowableCategories: v.array(v.string()),
+        restrictedCategories: v.array(v.string()),
+        categoryCheck: v.union(
+          v.literal("allowed"),
+          v.literal("restricted"),
+          v.literal("requires_review")
+        ),
+        amountCheck: v.union(
+          v.literal("within_limit"),
+          v.literal("exceeds_limit"),
+          v.literal("requires_approval")
+        ),
+      })
+    ),
+    exceptions: v.array(
+      v.object({
+        exceptionId: v.string(),
+        type: v.string(),
+        reason: v.string(),
+        requiredApprover: v.string(),
+        status: v.union(
+          v.literal("pending"),
+          v.literal("approved"),
+          v.literal("rejected")
+        ),
+        approvedBy: v.optional(v.string()),
+        approvedAt: v.optional(v.number()),
+        justification: v.optional(v.string()),
+        rejectionReason: v.optional(v.string()),
+      })
+    ),
+    auditTrail: v.array(
+      v.object({
+        timestamp: v.number(),
+        action: v.string(),
+        details: v.any(),
+        actorType: v.union(
+          v.literal("system"),
+          v.literal("agent"),
+          v.literal("user")
+        ),
+        actorId: v.optional(v.string()),
+      })
+    ),
+    startedAt: v.number(),
+    completedAt: v.optional(v.number()),
+    createdAt: v.number(),
+  })
+    .index("by_requisition", ["requisitionId"])
+    .index("by_workflow", ["workflowId"])
+    .index("by_status", ["status"])
+    .index("by_university", ["universityId"]),
+
+  // ============================================
+  // APPROVAL CHAINS (Approval Routing)
+  // ============================================
+
+  approvalChains: defineTable({
+    universityId: v.id("universities"),
+    name: v.string(),
+    description: v.string(),
+    isActive: v.boolean(),
+    triggerConditions: v.object({
+      minAmount: v.optional(v.number()),
+      maxAmount: v.optional(v.number()),
+      categories: v.optional(v.array(v.string())),
+      departments: v.optional(v.array(v.string())),
+      fundingTypes: v.optional(v.array(v.string())),
+      requiresGrant: v.optional(v.boolean()),
+    }),
+    stages: v.array(
+      v.object({
+        stageId: v.string(),
+        name: v.string(),
+        order: v.number(),
+        approverType: v.union(
+          v.literal("role"),
+          v.literal("specific_user"),
+          v.literal("department_head"),
+          v.literal("grant_pi"),
+          v.literal("budget_owner")
+        ),
+        approverRole: v.optional(v.string()),
+        approverId: v.optional(v.id("users")),
+        allowDelegation: v.boolean(),
+        escalationDays: v.number(),
+        escalateTo: v.optional(v.string()),
+        requiredForAmountAbove: v.optional(v.number()),
+        canSkipIfBelow: v.optional(v.number()),
+      })
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_active", ["isActive"]),
+
+  // Approval Workflow Instances
+  approvalWorkflows: defineTable({
+    universityId: v.id("universities"),
+    requisitionId: v.id("requisitions"),
+    approvalChainId: v.id("approvalChains"),
+    workflowId: v.string(), // Temporal workflow ID
+    status: v.union(
+      v.literal("pending"),
+      v.literal("in_progress"),
+      v.literal("approved"),
+      v.literal("rejected"),
+      v.literal("returned"),
+      v.literal("cancelled")
+    ),
+    currentStage: v.string(),
+    currentStageIndex: v.number(),
+    stages: v.array(
+      v.object({
+        stageId: v.string(),
+        stageName: v.string(),
+        approverId: v.id("users"),
+        approverName: v.string(),
+        approverEmail: v.string(),
+        status: v.union(
+          v.literal("pending"),
+          v.literal("approved"),
+          v.literal("rejected"),
+          v.literal("delegated"),
+          v.literal("skipped"),
+          v.literal("escalated")
+        ),
+        delegatedTo: v.optional(v.id("users")),
+        comments: v.optional(v.string()),
+        notifiedAt: v.optional(v.number()),
+        remindersSent: v.number(),
+        escalatedAt: v.optional(v.number()),
+        actionAt: v.optional(v.number()),
+        dueAt: v.number(),
+      })
+    ),
+    returnedToStage: v.optional(v.string()),
+    returnReason: v.optional(v.string()),
+    auditTrail: v.array(
+      v.object({
+        timestamp: v.number(),
+        action: v.string(),
+        actorId: v.string(),
+        actorName: v.string(),
+        details: v.any(),
+      })
+    ),
+    startedAt: v.number(),
+    completedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_requisition", ["requisitionId"])
+    .index("by_workflow", ["workflowId"])
+    .index("by_status", ["status"])
+    .index("by_university", ["universityId"]),
+
+  // ============================================
+  // EMAIL COMMUNICATION
+  // ============================================
+
+  emailThreads: defineTable({
+    universityId: v.id("universities"),
+    subject: v.string(),
+    threadType: v.union(
+      v.literal("quote_request"),
+      v.literal("quote_response"),
+      v.literal("vendor_inquiry"),
+      v.literal("status_inquiry"),
+      v.literal("approval_notification"),
+      v.literal("delivery_update"),
+      v.literal("invoice_clarification"),
+      v.literal("general")
+    ),
+    status: v.union(
+      v.literal("active"),
+      v.literal("awaiting_response"),
+      v.literal("resolved"),
+      v.literal("archived")
+    ),
+    participants: v.array(
+      v.object({
+        email: v.string(),
+        name: v.optional(v.string()),
+        type: v.union(
+          v.literal("internal"),
+          v.literal("vendor"),
+          v.literal("requester")
+        ),
+      })
+    ),
+    relatedEntity: v.optional(
+      v.object({
+        type: v.union(
+          v.literal("requisition"),
+          v.literal("purchase_order"),
+          v.literal("invoice"),
+          v.literal("quote_request"),
+          v.literal("vendor")
+        ),
+        id: v.string(),
+      })
+    ),
+    vendorId: v.optional(v.id("vendors")),
+    lastMessageAt: v.number(),
+    messageCount: v.number(),
+    unreadCount: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_status", ["status"])
+    .index("by_type", ["threadType"])
+    .index("by_vendor", ["vendorId"])
+    .index("by_last_message", ["lastMessageAt"]),
+
+  emailMessages: defineTable({
+    threadId: v.id("emailThreads"),
+    messageId: v.string(), // External message ID
+    direction: v.union(v.literal("inbound"), v.literal("outbound")),
+    from: v.object({
+      email: v.string(),
+      name: v.optional(v.string()),
+    }),
+    to: v.array(
+      v.object({
+        email: v.string(),
+        name: v.optional(v.string()),
+      })
+    ),
+    cc: v.optional(
+      v.array(
+        v.object({
+          email: v.string(),
+          name: v.optional(v.string()),
+        })
+      )
+    ),
+    subject: v.string(),
+    bodyText: v.string(),
+    bodyHtml: v.optional(v.string()),
+    attachments: v.array(
+      v.object({
+        filename: v.string(),
+        contentType: v.string(),
+        size: v.number(),
+        storageId: v.optional(v.id("_storage")),
+        url: v.optional(v.string()),
+      })
+    ),
+    isAiGenerated: v.boolean(),
+    aiClassification: v.optional(
+      v.object({
+        category: v.string(),
+        confidence: v.number(),
+        extractedData: v.optional(v.any()),
+        suggestedAction: v.optional(v.string()),
+      })
+    ),
+    read: v.boolean(),
+    readAt: v.optional(v.number()),
+    sentAt: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_thread", ["threadId", "sentAt"])
+    .index("by_message_id", ["messageId"]),
+
+  emailTemplates: defineTable({
+    universityId: v.id("universities"),
+    name: v.string(),
+    description: v.string(),
+    templateType: v.union(
+      v.literal("quote_request"),
+      v.literal("quote_followup"),
+      v.literal("approval_reminder"),
+      v.literal("status_response"),
+      v.literal("vendor_inquiry"),
+      v.literal("acknowledgment"),
+      v.literal("dispute")
+    ),
+    subject: v.string(),
+    bodyTemplate: v.string(),
+    variables: v.array(v.string()), // e.g., ["vendor_name", "product_name", "deadline"]
+    isActive: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_type", ["templateType"]),
+
+  // ============================================
+  // AI CALL LOGS (VAPI Integration)
+  // ============================================
+
+  aiCallLogs: defineTable({
+    universityId: v.id("universities"),
+    vendorId: v.id("vendors"),
+    callId: v.string(), // VAPI call ID
+    purpose: v.union(
+      v.literal("quote_request"),
+      v.literal("quote_followup"),
+      v.literal("order_status"),
+      v.literal("delivery_inquiry"),
+      v.literal("dispute_resolution")
+    ),
+    status: v.union(
+      v.literal("scheduled"),
+      v.literal("in_progress"),
+      v.literal("completed"),
+      v.literal("failed"),
+      v.literal("no_answer")
+    ),
+    phoneNumber: v.string(),
+    contactName: v.optional(v.string()),
+    scheduledAt: v.optional(v.number()),
+    startedAt: v.optional(v.number()),
+    endedAt: v.optional(v.number()),
+    durationSeconds: v.optional(v.number()),
+    transcript: v.optional(v.string()),
+    recordingUrl: v.optional(v.string()),
+    extractedData: v.optional(
+      v.object({
+        quotedPrices: v.optional(
+          v.array(
+            v.object({
+              productDescription: v.string(),
+              unitPrice: v.number(),
+              quantity: v.optional(v.number()),
+              validUntil: v.optional(v.string()),
+            })
+          )
+        ),
+        deliveryEstimate: v.optional(v.string()),
+        contactInfo: v.optional(v.any()),
+        followUpRequired: v.boolean(),
+        followUpReason: v.optional(v.string()),
+      })
+    ),
+    outcome: v.union(
+      v.literal("quote_obtained"),
+      v.literal("callback_scheduled"),
+      v.literal("no_answer"),
+      v.literal("voicemail_left"),
+      v.literal("wrong_number"),
+      v.literal("transferred"),
+      v.literal("other")
+    ),
+    notes: v.optional(v.string()),
+    quoteRequestId: v.optional(v.id("quoteRequests")),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_vendor", ["vendorId"])
+    .index("by_call_id", ["callId"])
+    .index("by_status", ["status"]),
+
+  // ============================================
+  // PAYMENT RECONCILIATION
+  // ============================================
+
+  paymentReconciliations: defineTable({
+    universityId: v.id("universities"),
+    invoiceId: v.id("invoices"),
+    workflowId: v.string(), // Temporal workflow ID
+    status: v.union(
+      v.literal("pending"),
+      v.literal("matching"),
+      v.literal("matched"),
+      v.literal("discrepancy_found"),
+      v.literal("under_review"),
+      v.literal("disputed"),
+      v.literal("approved"),
+      v.literal("paid"),
+      v.literal("rejected")
+    ),
+    matchType: v.union(
+      v.literal("three_way"), // PO + Receipt + Invoice
+      v.literal("two_way"), // PO + Invoice (services)
+      v.literal("receipt_only") // Receipt + Invoice (no PO)
+    ),
+    matchResults: v.object({
+      poMatched: v.boolean(),
+      poNumber: v.optional(v.string()),
+      poMatchDetails: v.optional(v.any()),
+      receiptMatched: v.boolean(),
+      receiptNumber: v.optional(v.string()),
+      receiptMatchDetails: v.optional(v.any()),
+      priceMatched: v.boolean(),
+      priceVariance: v.optional(v.number()),
+      priceVariancePercent: v.optional(v.number()),
+      quantityMatched: v.boolean(),
+      quantityVariance: v.optional(v.number()),
+    }),
+    discrepancies: v.array(
+      v.object({
+        discrepancyId: v.string(),
+        type: v.union(
+          v.literal("no_po"),
+          v.literal("no_receipt"),
+          v.literal("price_variance"),
+          v.literal("quantity_variance"),
+          v.literal("duplicate_invoice"),
+          v.literal("unauthorized_purchase"),
+          v.literal("contract_violation")
+        ),
+        severity: v.union(
+          v.literal("low"),
+          v.literal("medium"),
+          v.literal("high")
+        ),
+        description: v.string(),
+        amount: v.optional(v.number()),
+        lineItemNumber: v.optional(v.number()),
+        resolution: v.optional(
+          v.union(
+            v.literal("pending"),
+            v.literal("approved"),
+            v.literal("adjusted"),
+            v.literal("disputed"),
+            v.literal("rejected")
+          )
+        ),
+        resolvedBy: v.optional(v.string()),
+        resolvedAt: v.optional(v.number()),
+        resolutionNotes: v.optional(v.string()),
+      })
+    ),
+    paymentDetails: v.optional(
+      v.object({
+        approvedAmount: v.number(),
+        adjustments: v.array(
+          v.object({
+            reason: v.string(),
+            amount: v.number(),
+          })
+        ),
+        paymentDate: v.number(),
+        paymentMethod: v.string(),
+        paymentReference: v.string(),
+        earlyPayDiscountCaptured: v.boolean(),
+        discountAmount: v.optional(v.number()),
+      })
+    ),
+    vendorDisputeId: v.optional(v.string()),
+    auditTrail: v.array(
+      v.object({
+        timestamp: v.number(),
+        action: v.string(),
+        details: v.any(),
+        actorType: v.union(
+          v.literal("system"),
+          v.literal("agent"),
+          v.literal("user")
+        ),
+        actorId: v.optional(v.string()),
+      })
+    ),
+    startedAt: v.number(),
+    completedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_invoice", ["invoiceId"])
+    .index("by_workflow", ["workflowId"])
+    .index("by_status", ["status"])
+    .index("by_university", ["universityId"]),
+
+  // ============================================
+  // SOFTWARE LICENSES
+  // ============================================
+
+  softwareLicenses: defineTable({
+    universityId: v.id("universities"),
+    vendorId: v.id("vendors"),
+    contractId: v.optional(v.id("contracts")),
+    name: v.string(),
+    publisher: v.string(),
+    productFamily: v.optional(v.string()),
+    licenseType: v.union(
+      v.literal("subscription"),
+      v.literal("perpetual"),
+      v.literal("consumption"),
+      v.literal("site_license"),
+      v.literal("named_user"),
+      v.literal("concurrent")
+    ),
+    licensingModel: v.union(
+      v.literal("per_user"),
+      v.literal("per_device"),
+      v.literal("per_core"),
+      v.literal("per_instance"),
+      v.literal("enterprise"),
+      v.literal("metered")
+    ),
+    totalLicenses: v.number(),
+    assignedLicenses: v.number(),
+    activeUsers: v.number(),
+    utilizationPercent: v.number(),
+    costPerLicense: v.number(),
+    totalAnnualCost: v.number(),
+    costPerActiveUser: v.number(),
+    renewalDate: v.number(),
+    autoRenewal: v.boolean(),
+    renewalNoticeDays: v.number(),
+    renewalStatus: v.union(
+      v.literal("active"),
+      v.literal("renewal_pending"),
+      v.literal("in_negotiation"),
+      v.literal("renewed"),
+      v.literal("cancelled"),
+      v.literal("expired")
+    ),
+    complianceStatus: v.union(
+      v.literal("compliant"),
+      v.literal("over_deployed"),
+      v.literal("under_utilized"),
+      v.literal("audit_required")
+    ),
+    tier: v.optional(v.string()), // e.g., "Enterprise", "Professional", "Basic"
+    features: v.array(v.string()),
+    integrations: v.array(v.string()),
+    departments: v.array(v.string()),
+    primaryContact: v.optional(v.id("users")),
+    notes: v.optional(v.string()),
+    optimizationScore: v.number(), // 0-100
+    optimizationRecommendations: v.array(
+      v.object({
+        type: v.union(
+          v.literal("downgrade_tier"),
+          v.literal("reduce_licenses"),
+          v.literal("consolidate"),
+          v.literal("switch_vendor"),
+          v.literal("renegotiate")
+        ),
+        description: v.string(),
+        potentialSavings: v.number(),
+        effort: v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
+        priority: v.union(v.literal("low"), v.literal("medium"), v.literal("high")),
+      })
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId"])
+    .index("by_vendor", ["vendorId"])
+    .index("by_renewal_date", ["renewalDate"])
+    .index("by_compliance", ["complianceStatus"])
+    .index("by_utilization", ["utilizationPercent"]),
+
+  // Software License Usage Tracking
+  licenseUsageRecords: defineTable({
+    licenseId: v.id("softwareLicenses"),
+    recordDate: v.number(),
+    granularity: v.union(
+      v.literal("daily"),
+      v.literal("weekly"),
+      v.literal("monthly")
+    ),
+    totalLicenses: v.number(),
+    assignedLicenses: v.number(),
+    activeUsers: v.number(),
+    peakConcurrentUsers: v.optional(v.number()),
+    loginCount: v.optional(v.number()),
+    featureUsage: v.optional(
+      v.array(
+        v.object({
+          feature: v.string(),
+          usageCount: v.number(),
+          uniqueUsers: v.number(),
+        })
+      )
+    ),
+    departmentBreakdown: v.optional(
+      v.array(
+        v.object({
+          department: v.string(),
+          assignedLicenses: v.number(),
+          activeUsers: v.number(),
+        })
+      )
+    ),
+    source: v.union(
+      v.literal("sso_logs"),
+      v.literal("vendor_api"),
+      v.literal("usage_analytics"),
+      v.literal("manual")
+    ),
+    createdAt: v.number(),
+  })
+    .index("by_license", ["licenseId", "recordDate"])
+    .index("by_date", ["recordDate"]),
+
+  // License Renewal Calendar
+  licenseRenewalCalendar: defineTable({
+    universityId: v.id("universities"),
+    licenseId: v.id("softwareLicenses"),
+    renewalDate: v.number(),
+    notificationDays: v.array(v.number()), // e.g., [90, 60, 30, 14, 7]
+    notificationsSent: v.array(
+      v.object({
+        daysBeforeRenewal: v.number(),
+        sentAt: v.number(),
+        recipients: v.array(v.string()),
+      })
+    ),
+    renewalValue: v.number(),
+    previousValue: v.optional(v.number()),
+    priceChangePercent: v.optional(v.number()),
+    renewalDecision: v.optional(
+      v.union(
+        v.literal("pending"),
+        v.literal("renew_as_is"),
+        v.literal("renegotiate"),
+        v.literal("downgrade"),
+        v.literal("cancel"),
+        v.literal("switch_vendor")
+      )
+    ),
+    decisionMadeBy: v.optional(v.id("users")),
+    decisionMadeAt: v.optional(v.number()),
+    notes: v.optional(v.string()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_university", ["universityId", "renewalDate"])
+    .index("by_license", ["licenseId"])
+    .index("by_date", ["renewalDate"]),
 });
