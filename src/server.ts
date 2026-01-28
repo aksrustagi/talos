@@ -17,6 +17,7 @@ import { webhookRoutes } from "./routes/webhooks";
 import { spendAnalyticsRoutes } from "./routes/spendAnalytics";
 import { phase1AgentRoutes } from "./routes/phase1-agents";
 import { composioRoutes } from "./routes/composio";
+import { connectorRoutes } from "./routes/connectors";
 
 // Middleware
 import { authMiddleware } from "./middleware/auth";
@@ -64,6 +65,7 @@ app.get("/", (c) => {
       spend: "/api/v1/spend",
       phase1: "/api/v1/phase1",
       composio: "/api/v1/composio",
+      connectors: "/api/v1/connectors",
     },
     pricing: {
       flat: "$30,000/month",
@@ -94,6 +96,7 @@ api.route("/webhooks", webhookRoutes);
 api.route("/spend", spendAnalyticsRoutes);
 api.route("/phase1", phase1AgentRoutes);
 api.route("/composio", composioRoutes);
+api.route("/connectors", connectorRoutes);
 
 // 404 handler
 app.notFound((c) => {
@@ -112,6 +115,7 @@ app.notFound((c) => {
         "/api/v1/spend",
         "/api/v1/phase1",
         "/api/v1/composio",
+        "/api/v1/connectors",
       ],
     },
     404
