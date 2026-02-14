@@ -8,6 +8,7 @@ Design principles:
 - All writes go through a single insert method.
 """
 
+import hashlib
 import sqlite3
 import os
 import json
@@ -65,7 +66,11 @@ CREATE TABLE IF NOT EXISTS audit_log (
 
     -- Execution metadata
     execution_id TEXT,
-    execution_duration_ms INTEGER
+    execution_duration_ms INTEGER,
+
+    -- Tamper-evidence hash chain
+    previous_hash TEXT,
+    entry_hash TEXT NOT NULL
 );
 """
 
@@ -144,9 +149,19 @@ class AuditDatabase:
         Insert a single audit log entry. Returns the new row ID.
 
         This is the ONLY write operation exposed. No update or delete.
+        Computes a SHA-256 hash chain linking each entry to the previous.
         """
         conn = self._get_connection()
         try:
+            # Get the hash of the most recent entry for chaining
+            prev_row = conn.execute(
+                "SELECT entry_hash FROM audit_log ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            previous_hash = prev_row["entry_hash"] if prev_row else "GENESIS"
+
+            # Compute this entry's hash from its content + previous hash
+            entry_hash = self._compute_entry_hash(entry, previous_hash)
+
             cursor = conn.execute(
                 """
                 INSERT INTO audit_log (
@@ -157,7 +172,8 @@ class AuditDatabase:
                     tool_calls, tool_results,
                     requisition_id, purchase_order_id, contract_id,
                     triggered_by, trigger_type, user_email, user_department,
-                    university_id, execution_id, execution_duration_ms
+                    university_id, execution_id, execution_duration_ms,
+                    previous_hash, entry_hash
                 ) VALUES (
                     ?, ?, ?,
                     ?, ?,
@@ -166,7 +182,8 @@ class AuditDatabase:
                     ?, ?,
                     ?, ?, ?,
                     ?, ?, ?, ?,
-                    ?, ?, ?
+                    ?, ?, ?,
+                    ?, ?
                 )
                 """,
                 (
@@ -193,6 +210,8 @@ class AuditDatabase:
                     entry.university_id,
                     entry.execution_id,
                     entry.execution_duration_ms,
+                    previous_hash,
+                    entry_hash,
                 ),
             )
             conn.commit()
@@ -202,10 +221,76 @@ class AuditDatabase:
                 row_id=row_id,
                 agent=entry.agent_name,
                 requisition_id=entry.requisition_id,
+                entry_hash=entry_hash[:16],
             )
             return row_id
         finally:
             conn.close()
+
+    def verify_chain_integrity(self) -> dict:
+        """
+        Verify the entire hash chain is intact.
+
+        Returns a dict with:
+        - valid: bool - whether the chain is intact
+        - total_entries: int
+        - first_broken_id: optional int - ID of first broken link
+        """
+        conn = self._get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM audit_log ORDER BY id ASC"
+            ).fetchall()
+
+            if not rows:
+                return {"valid": True, "total_entries": 0, "first_broken_id": None}
+
+            expected_prev = "GENESIS"
+            for row in rows:
+                entry = self._row_to_entry(row)
+
+                if row["previous_hash"] != expected_prev:
+                    return {
+                        "valid": False,
+                        "total_entries": len(rows),
+                        "first_broken_id": row["id"],
+                        "error": f"Entry {row['id']}: previous_hash mismatch",
+                    }
+
+                recomputed = self._compute_entry_hash(entry, expected_prev)
+                if row["entry_hash"] != recomputed:
+                    return {
+                        "valid": False,
+                        "total_entries": len(rows),
+                        "first_broken_id": row["id"],
+                        "error": f"Entry {row['id']}: entry_hash mismatch (content tampered)",
+                    }
+
+                expected_prev = row["entry_hash"]
+
+            return {"valid": True, "total_entries": len(rows), "first_broken_id": None}
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _compute_entry_hash(entry: AuditEntry, previous_hash: str) -> str:
+        """Compute SHA-256 hash of an entry's content chained to previous hash."""
+        content = (
+            f"{previous_hash}|"
+            f"{entry.timestamp}|"
+            f"{entry.agent_name}|"
+            f"{entry.input_text}|"
+            f"{entry.output_text}|"
+            f"{entry.model_used}|"
+            f"{entry.triggered_by}|"
+            f"{entry.trigger_type}|"
+            f"{entry.decision}|"
+            f"{entry.reasoning}|"
+            f"{entry.requisition_id}|"
+            f"{entry.purchase_order_id}|"
+            f"{entry.contract_id}"
+        )
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
     def query_by_requisition(self, requisition_id: str) -> List[AuditEntry]:
         """Get all audit entries for a given requisition, ordered by timestamp."""
@@ -347,4 +432,6 @@ class AuditDatabase:
             university_id=row["university_id"],
             execution_id=row["execution_id"],
             execution_duration_ms=row["execution_duration_ms"],
+            previous_hash=row["previous_hash"],
+            entry_hash=row["entry_hash"],
         )

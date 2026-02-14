@@ -41,6 +41,7 @@ class AuditPDFExporter:
         summary: dict,
         include_full_io: bool = True,
         include_tool_calls: bool = True,
+        chain_verification: Optional[dict] = None,
     ) -> bytes:
         """
         Generate a PDF audit report and return it as bytes.
@@ -51,6 +52,7 @@ class AuditPDFExporter:
             summary: Decision chain summary dict
             include_full_io: Whether to include full LLM input/output
             include_tool_calls: Whether to include tool call details
+            chain_verification: Optional result from verify_chain_integrity()
 
         Returns:
             PDF file content as bytes
@@ -78,7 +80,7 @@ class AuditPDFExporter:
         self._add_cost_summary(pdf, entries)
 
         # -- Appendix: integrity notice --
-        self._add_integrity_notice(pdf, requisition_id, entries)
+        self._add_integrity_notice(pdf, requisition_id, entries, chain_verification)
 
         return pdf.output()
 
@@ -394,7 +396,11 @@ class AuditPDFExporter:
         pdf.ln()
 
     def _add_integrity_notice(
-        self, pdf: FPDF, requisition_id: str, entries: List[AuditEntry]
+        self,
+        pdf: FPDF,
+        requisition_id: str,
+        entries: List[AuditEntry],
+        chain_verification: Optional[dict] = None,
     ):
         """Add data integrity and provenance notice."""
         if pdf.get_y() > 220:
@@ -406,18 +412,32 @@ class AuditPDFExporter:
         pdf.set_font(self.FONT_FAMILY, "", 9)
         generated = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
 
+        first_hash = entries[0].entry_hash[:16] if entries and entries[0].entry_hash else "N/A"
+        last_hash = entries[-1].entry_hash[:16] if entries and entries[-1].entry_hash else "N/A"
+
         notice = (
             f"This audit report was generated on {generated} from the Talos Procurement "
             f"AI Platform's append-only audit database. The underlying SQLite database "
-            f"enforces immutability through database triggers that prevent UPDATE and DELETE "
-            f"operations on the audit_log table.\n\n"
+            f"enforces immutability through:\n"
+            f"  1. Database triggers that prevent UPDATE and DELETE operations\n"
+            f"  2. SHA-256 cryptographic hash chain linking each entry to its predecessor\n\n"
             f"Requisition: {requisition_id}\n"
             f"Total entries in audit trail: {len(entries)}\n"
             f"First entry timestamp: {entries[0].timestamp if entries else 'N/A'}\n"
             f"Last entry timestamp: {entries[-1].timestamp if entries else 'N/A'}\n"
             f"Entry ID range: {entries[0].id if entries else 'N/A'} "
-            f"to {entries[-1].id if entries else 'N/A'}\n\n"
-            f"For questions about this audit trail, contact your system administrator "
+            f"to {entries[-1].id if entries else 'N/A'}\n"
+            f"Hash chain: {first_hash}... -> {last_hash}...\n"
+        )
+
+        if chain_verification:
+            status = "PASSED" if chain_verification.get("valid") else "FAILED"
+            notice += f"Chain integrity verification: {status}\n"
+            if not chain_verification.get("valid"):
+                notice += f"  Error: {chain_verification.get('error', 'Unknown')}\n"
+
+        notice += (
+            f"\nFor questions about this audit trail, contact your system administrator "
             f"or the Talos platform team."
         )
 

@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 import json
 import operator
+import re
 import time
 
 from langgraph.graph import Graph, StateGraph, END
@@ -290,6 +291,9 @@ class ProcurementAgent(ABC):
         last_message = final_state["messages"][-1]
         response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
 
+        # Extract token usage from LangChain response metadata
+        input_tokens, output_tokens = self._extract_token_usage(final_state["messages"])
+
         # Collect all tool calls and results
         all_tool_calls = [
             tc for msg in final_state["messages"]
@@ -301,10 +305,32 @@ class ProcurementAgent(ABC):
         # Extract decision and reasoning from the response
         decision, reasoning = self._extract_decision(response_text, all_tool_calls)
 
-        # Extract procurement IDs from context
+        # Extract procurement IDs - from context first, then auto-detect from content
         requisition_id = (context or {}).get("requisition_id")
         purchase_order_id = (context or {}).get("purchase_order_id")
         contract_id = (context or {}).get("contract_id")
+
+        # Auto-detect procurement IDs from message, response, and tool calls
+        all_text = message + " " + response_text
+        for tc in all_tool_calls:
+            args = tc.get("args", {})
+            all_text += " " + json.dumps(args, default=str)
+
+        if not requisition_id:
+            requisition_id = self._extract_id(all_text, r"REQ-\d{4}-\d+")
+            if not requisition_id:
+                # Also check tool call args for requisition_id fields
+                for tc in all_tool_calls:
+                    rid = tc.get("args", {}).get("requisition_id")
+                    if rid:
+                        requisition_id = rid
+                        break
+
+        if not purchase_order_id:
+            purchase_order_id = self._extract_id(all_text, r"PO-\d{4}-\d+")
+
+        if not contract_id:
+            contract_id = self._extract_id(all_text, r"CON-\d{4}-\d+")
 
         # Log to audit trail
         if audit_logger:
@@ -325,6 +351,8 @@ class ProcurementAgent(ABC):
                 input_text=full_input,
                 output_text=response_text,
                 model_used=self.config.model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 triggered_by=user_id,
                 trigger_type=(context or {}).get("trigger_type", "user"),
                 decision=decision,
@@ -349,50 +377,180 @@ class ProcurementAgent(ABC):
             "pending_approval": final_state.get("pending_approval"),
         }
 
+    @staticmethod
+    def _extract_token_usage(messages: list) -> tuple[Optional[int], Optional[int]]:
+        """
+        Extract token usage from LangChain AIMessage response_metadata.
+
+        LangChain's ChatAnthropic populates response_metadata with usage info:
+          {"usage": {"input_tokens": N, "output_tokens": N}}
+        Accumulates across all AI messages (multi-turn tool use).
+        """
+        total_input = 0
+        total_output = 0
+        found_any = False
+
+        for msg in messages:
+            if not isinstance(msg, AIMessage):
+                continue
+
+            metadata = getattr(msg, "response_metadata", None) or {}
+            usage = metadata.get("usage", {})
+
+            if usage.get("input_tokens") is not None:
+                total_input += usage["input_tokens"]
+                found_any = True
+            if usage.get("output_tokens") is not None:
+                total_output += usage["output_tokens"]
+                found_any = True
+
+            # Also check usage_metadata (newer LangChain versions)
+            usage_meta = getattr(msg, "usage_metadata", None) or {}
+            if usage_meta.get("input_tokens") is not None:
+                if not found_any:
+                    total_input += usage_meta["input_tokens"]
+                    found_any = True
+            if usage_meta.get("output_tokens") is not None:
+                if not found_any:
+                    total_output += usage_meta["output_tokens"]
+
+        if not found_any:
+            return None, None
+        return total_input, total_output
+
+    @staticmethod
+    def _extract_id(text: str, pattern: str) -> Optional[str]:
+        """Extract a procurement ID matching a regex pattern from text."""
+        match = re.search(pattern, text)
+        return match.group(0) if match else None
+
+    # Maps tool names to (decision_type, reasoning_template) for structured extraction.
+    # Subclasses can override or extend via class attribute.
+    DECISION_TOOL_MAP: dict[str, dict] = {
+        "create_requisition": {
+            "decision": "requisition_created",
+            "reasoning_template": "Created requisition with {item_count} items",
+            "reasoning_args": lambda args: {"item_count": len(args.get("items", []))},
+        },
+        "process_approval": {
+            "decision_from_args": "decision",
+            "decision_fallback": "approval_processed",
+            "reasoning_from_args": "comments",
+            "reasoning_fallback": "Approval processed",
+        },
+        "route_approval": {
+            "decision": "routed_for_approval",
+            "reasoning_template": "Routed for approval (amount: ${total_amount})",
+            "reasoning_args": lambda args: {"total_amount": args.get("total_amount", "N/A")},
+        },
+        "score_vendor": {
+            "decision": "vendor_evaluated",
+            "reasoning_template": "Evaluated vendor {vendor_id}",
+            "reasoning_args": lambda args: {"vendor_id": args.get("vendor_id", "N/A")},
+        },
+        "find_diverse_suppliers": {
+            "decision": "diverse_suppliers_searched",
+            "reasoning_template": "Searched diverse suppliers for category {category}",
+            "reasoning_args": lambda args: {"category": args.get("category", "N/A")},
+        },
+        "assess_vendor_risk": {
+            "decision": "vendor_risk_assessed",
+            "reasoning_template": "Assessed risk for vendor {vendor_id}",
+            "reasoning_args": lambda args: {"vendor_id": args.get("vendor_id", "N/A")},
+        },
+        "create_price_alert": {
+            "decision": "price_alert_created",
+            "reasoning_template": "Price alert created",
+        },
+        "escalate_approval": {
+            "decision": "approval_escalated",
+            "reasoning_from_args": "reason",
+            "reasoning_fallback": "SLA breach",
+        },
+        "check_budget": {
+            "decision": "budget_checked",
+            "reasoning_template": "Budget check for {budget_code}: ${amount}",
+            "reasoning_args": lambda args: {
+                "budget_code": args.get("budget_code", "N/A"),
+                "amount": args.get("amount", "N/A"),
+            },
+        },
+        "validate_policy": {
+            "decision": "policy_validated",
+            "reasoning_template": "Policy validation completed",
+        },
+        "compare_vendor_prices": {
+            "decision": "prices_compared",
+            "reasoning_template": "Cross-vendor price comparison completed",
+        },
+        "get_price_history": {
+            "decision": "price_history_analyzed",
+            "reasoning_template": "Historical price analysis completed",
+        },
+        "recommend_purchase_timing": {
+            "decision": "timing_recommended",
+            "reasoning_template": "Purchase timing recommendation generated",
+        },
+    }
+
     def _extract_decision(
         self, response_text: str, tool_calls: list
     ) -> tuple[Optional[str], Optional[str]]:
         """
         Extract the decision and reasoning from agent output.
 
-        Looks for common decision patterns in tool calls and response text.
+        Uses DECISION_TOOL_MAP for structured extraction from tool calls,
+        then falls back to response text analysis.
         Returns (decision, reasoning) tuple.
         """
         decision = None
         reasoning = None
 
-        # Check tool calls for decision indicators
+        # Check tool calls against the structured map
         for tc in tool_calls:
             name = tc.get("name", "")
             args = tc.get("args", {})
 
-            if name == "create_requisition":
-                decision = "requisition_created"
-                reasoning = f"Created requisition with {len(args.get('items', []))} items"
-            elif name == "process_approval":
-                decision = args.get("decision", "approval_processed")
-                reasoning = args.get("comments", "Approval processed")
-            elif name == "route_approval":
-                decision = "routed_for_approval"
-                reasoning = f"Routed for approval (amount: ${args.get('total_amount', 'N/A')})"
-            elif name == "score_vendor":
-                decision = "vendor_evaluated"
-                reasoning = f"Evaluated vendor {args.get('vendor_id', 'N/A')}"
-            elif name == "create_price_alert":
-                decision = "price_alert_created"
-            elif name == "escalate_approval":
-                decision = "approval_escalated"
-                reasoning = args.get("reason", "SLA breach")
+            mapping = self.DECISION_TOOL_MAP.get(name)
+            if not mapping:
+                continue
+
+            # Extract decision
+            if "decision_from_args" in mapping:
+                decision = args.get(
+                    mapping["decision_from_args"],
+                    mapping.get("decision_fallback", name),
+                )
+            else:
+                decision = mapping.get("decision", name)
+
+            # Extract reasoning
+            if "reasoning_from_args" in mapping:
+                reasoning = args.get(
+                    mapping["reasoning_from_args"],
+                    mapping.get("reasoning_fallback"),
+                )
+            elif "reasoning_template" in mapping:
+                template = mapping["reasoning_template"]
+                if "reasoning_args" in mapping:
+                    template_args = mapping["reasoning_args"](args)
+                    reasoning = template.format(**template_args)
+                else:
+                    reasoning = template
 
         # If no decision from tools, try to infer from response
         if not decision and response_text:
             lower = response_text.lower()
-            if "approved" in lower:
+            if "approved" in lower and "not approved" not in lower:
                 decision = "approved"
             elif "rejected" in lower:
                 decision = "rejected"
             elif "recommend" in lower:
                 decision = "recommendation_made"
+            elif "alert" in lower and "created" in lower:
+                decision = "alert_created"
+            elif "escalat" in lower:
+                decision = "escalated"
 
         # Use first 500 chars of response as reasoning fallback
         if not reasoning and response_text:

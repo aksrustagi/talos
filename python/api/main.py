@@ -679,12 +679,16 @@ async def export_audit_report(
         from audit.models import AuditEntry
         entries = [AuditEntry(**entry) for entry in result["decision_chain"]]
 
+        # Verify hash chain integrity for the report
+        chain_verification = audit_db.verify_chain_integrity()
+
         pdf_bytes = audit_pdf_exporter.generate_report(
             requisition_id=requisition_id,
             entries=entries,
             summary=result["summary"],
             include_full_io=include_full_io,
             include_tool_calls=include_tool_calls,
+            chain_verification=chain_verification,
         )
 
         filename = f"audit_report_{requisition_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
@@ -757,6 +761,24 @@ async def get_audit_by_contract(
         raise
     except Exception as e:
         logger.error("Audit contract query error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/audit/verify/integrity", tags=["Audit"])
+async def verify_audit_integrity(
+    user: UserContext = Depends(get_current_user),
+):
+    """
+    Verify the cryptographic hash chain integrity of the entire audit log.
+
+    Returns whether any entries have been tampered with, inserted
+    out of order, or removed. Uses SHA-256 hash chain verification.
+    """
+    try:
+        result = audit_db.verify_chain_integrity()
+        return result
+    except Exception as e:
+        logger.error("Audit integrity verification error", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 

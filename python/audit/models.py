@@ -78,6 +78,16 @@ class AuditEntry(BaseModel):
         None, description="How long the agent execution took in milliseconds"
     )
 
+    # Tamper-evidence hash chain
+    previous_hash: Optional[str] = Field(
+        None,
+        description="SHA-256 hash of the previous audit entry (chain link)",
+    )
+    entry_hash: Optional[str] = Field(
+        None,
+        description="SHA-256 hash of this entry's content (for integrity verification)",
+    )
+
 
 class AuditDecisionSummary(BaseModel):
     """High-level summary of the decision chain for a requisition."""
