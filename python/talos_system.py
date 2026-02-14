@@ -716,8 +716,8 @@ def show_info():
         print(f"  [{tier:6s}] {name:30s} -> {model}")
     print(f"\nConnectors:")
     try:
-        from connectors.registry import CONNECTORS
-        for name in CONNECTORS:
+        from connectors.registry import CONNECTOR_REGISTRY
+        for name in CONNECTOR_REGISTRY:
             print(f"  {name}")
     except ImportError:
         print("  (connector registry not available)")
