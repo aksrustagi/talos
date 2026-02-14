@@ -5,6 +5,11 @@ Records every agent call with full traceability for CFO scrutiny
 and federal grant audits. Uses SQLite with enforced append-only
 semantics (no UPDATE or DELETE operations).
 
+Provides both synchronous (AuditLogger) and asynchronous (AsyncAuditLogger)
+interfaces. The sync version is used inside ProcurementAgent.run() to
+avoid changing agent code; the async version is used in the API layer
+and Temporal activities.
+
 Answers:
   - "Why did the system choose this vendor?"
   - "Why was this price accepted?"
@@ -18,6 +23,8 @@ import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
+
+import aiosqlite
 
 
 # Default database path — configurable via TALOS_AUDIT_DB env var
@@ -33,7 +40,7 @@ def _get_db_path() -> str:
     return path
 
 
-# Thread-local connections for safe concurrent access
+# Thread-local connections for safe concurrent access (sync path)
 _local = threading.local()
 
 
@@ -387,13 +394,187 @@ class AuditLogger:
         }
 
 
-# Module-level singleton for convenience
+# ============================================
+# Async interface (for API / Temporal)
+# ============================================
+
+
+class AsyncAuditLogger:
+    """Async version of AuditLogger backed by aiosqlite.
+
+    Uses the migration system for schema management rather than
+    the hardcoded SCHEMA_SQL, so schema changes are forward-compatible.
+    """
+
+    def __init__(self, db_path: Optional[str] = None):
+        self._db_path = db_path or _get_db_path()
+        self._initialised = False
+
+    async def _db(self) -> aiosqlite.Connection:
+        db = await aiosqlite.connect(self._db_path)
+        db.row_factory = aiosqlite.Row
+        await db.execute("PRAGMA journal_mode=WAL")
+        await db.execute("PRAGMA foreign_keys=ON")
+        if not self._initialised:
+            from audit.migrations import apply_migrations
+            await apply_migrations(db)
+            self._initialised = True
+        return db
+
+    async def log_agent_call(self, **kwargs) -> str:
+        entry_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+        db = await self._db()
+        try:
+            await db.execute(
+                """
+                INSERT INTO audit_log (
+                    id, timestamp, agent_name, agent_id,
+                    input_message, input_context,
+                    output_response, output_tool_calls, output_actions,
+                    model_used, cost_input_tokens, cost_output_tokens, cost_total_usd,
+                    decision_made, decision_reasoning,
+                    requisition_id, po_id, contract_id,
+                    triggered_by, user_id, user_email, university_id,
+                    workflow_run_id, workflow_step, parent_audit_id,
+                    duration_ms
+                ) VALUES (
+                    ?, ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?,
+                    ?
+                )
+                """,
+                (
+                    entry_id, now,
+                    kwargs["agent_name"], kwargs["agent_id"],
+                    kwargs["input_message"],
+                    json.dumps(kwargs.get("input_context")) if kwargs.get("input_context") else None,
+                    kwargs["output_response"],
+                    json.dumps(kwargs.get("output_tool_calls")) if kwargs.get("output_tool_calls") else None,
+                    json.dumps(kwargs.get("output_actions")) if kwargs.get("output_actions") else None,
+                    kwargs["model_used"],
+                    kwargs.get("cost_input_tokens", 0),
+                    kwargs.get("cost_output_tokens", 0),
+                    kwargs.get("cost_total_usd", 0.0),
+                    kwargs.get("decision_made"),
+                    kwargs.get("decision_reasoning"),
+                    kwargs.get("requisition_id"),
+                    kwargs.get("po_id"),
+                    kwargs.get("contract_id"),
+                    kwargs["triggered_by"],
+                    kwargs.get("user_id"),
+                    kwargs.get("user_email"),
+                    kwargs.get("university_id"),
+                    kwargs.get("workflow_run_id"),
+                    kwargs.get("workflow_step"),
+                    kwargs.get("parent_audit_id"),
+                    kwargs.get("duration_ms", 0),
+                ),
+            )
+            await db.commit()
+            return entry_id
+        finally:
+            await db.close()
+
+    async def get_by_requisition(self, requisition_id: str) -> list[dict]:
+        db = await self._db()
+        try:
+            rows = await db.execute_fetchall(
+                "SELECT * FROM audit_log WHERE requisition_id=? ORDER BY timestamp ASC",
+                (requisition_id,),
+            )
+            return [dict(r) for r in rows]
+        finally:
+            await db.close()
+
+    async def get_by_po(self, po_id: str) -> list[dict]:
+        db = await self._db()
+        try:
+            rows = await db.execute_fetchall(
+                "SELECT * FROM audit_log WHERE po_id=? ORDER BY timestamp ASC",
+                (po_id,),
+            )
+            return [dict(r) for r in rows]
+        finally:
+            await db.close()
+
+    async def get_by_contract(self, contract_id: str) -> list[dict]:
+        db = await self._db()
+        try:
+            rows = await db.execute_fetchall(
+                "SELECT * FROM audit_log WHERE contract_id=? ORDER BY timestamp ASC",
+                (contract_id,),
+            )
+            return [dict(r) for r in rows]
+        finally:
+            await db.close()
+
+    async def get_decision_chain(self, requisition_id: str) -> list[dict]:
+        entries = await self.get_by_requisition(requisition_id)
+        chain = []
+        for entry in entries:
+            chain.append({
+                "step": len(chain) + 1,
+                "timestamp": entry["timestamp"],
+                "agent": entry["agent_name"],
+                "action": entry.get("decision_made") or f"Agent call: {entry['agent_id']}",
+                "reasoning": entry.get("decision_reasoning") or "See full output",
+                "input_summary": entry["input_message"][:200],
+                "output_summary": entry["output_response"][:200],
+                "model": entry["model_used"],
+                "cost_usd": entry.get("cost_total_usd", 0),
+                "triggered_by": entry["triggered_by"],
+                "user_id": entry.get("user_id"),
+                "tool_calls": json.loads(entry["output_tool_calls"])
+                    if entry.get("output_tool_calls") else [],
+                "duration_ms": entry.get("duration_ms", 0),
+            })
+        return chain
+
+    async def get_summary_stats(self, requisition_id: str) -> dict:
+        entries = await self.get_by_requisition(requisition_id)
+        if not entries:
+            return {"requisition_id": requisition_id, "total_entries": 0}
+        return {
+            "requisition_id": requisition_id,
+            "total_entries": len(entries),
+            "first_action": entries[0]["timestamp"],
+            "last_action": entries[-1]["timestamp"],
+            "agents_involved": list(set(e["agent_name"] for e in entries)),
+            "total_cost_usd": round(sum(e.get("cost_total_usd", 0) for e in entries), 6),
+            "total_input_tokens": sum(e.get("cost_input_tokens", 0) for e in entries),
+            "total_output_tokens": sum(e.get("cost_output_tokens", 0) for e in entries),
+            "total_duration_ms": sum(e.get("duration_ms", 0) for e in entries),
+        }
+
+
+# ============================================
+# Singletons
+# ============================================
+
 _default_logger: Optional[AuditLogger] = None
 
 
 def get_audit_logger(db_path: Optional[str] = None) -> AuditLogger:
-    """Get or create the default AuditLogger singleton."""
+    """Get or create the default synchronous AuditLogger singleton."""
     global _default_logger
     if _default_logger is None:
         _default_logger = AuditLogger(db_path)
     return _default_logger
+
+
+_async_logger: Optional[AsyncAuditLogger] = None
+
+
+def get_async_audit_logger(db_path: Optional[str] = None) -> AsyncAuditLogger:
+    """Get or create the default async AuditLogger singleton."""
+    global _async_logger
+    if _async_logger is None:
+        _async_logger = AsyncAuditLogger(db_path)
+    return _async_logger

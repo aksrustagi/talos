@@ -5,7 +5,13 @@ Provides append-only audit logging and PDF report generation
 for procurement AI agent decisions.
 """
 
-from .audit_log import AuditLogger, get_audit_logger, init_db
+from .audit_log import (
+    AuditLogger,
+    AsyncAuditLogger,
+    get_audit_logger,
+    get_async_audit_logger,
+    init_db,
+)
 
 
 def generate_audit_pdf(*args, **kwargs):
@@ -16,7 +22,9 @@ def generate_audit_pdf(*args, **kwargs):
 
 __all__ = [
     "AuditLogger",
+    "AsyncAuditLogger",
     "get_audit_logger",
+    "get_async_audit_logger",
     "init_db",
     "generate_audit_pdf",
 ]

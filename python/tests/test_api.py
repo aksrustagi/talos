@@ -56,25 +56,56 @@ class TestHealthEndpoints:
         data = resp.json()
         assert data["status"] == "healthy"
         assert "timestamp" in data
+        assert "temporal_connected" in data
 
-    def test_list_agents(self, client):
-        resp = client.get("/api/agents")
+    def test_list_agents(self, client, auth_headers):
+        resp = client.get("/api/agents", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert "agents" in data
         assert "count" in data
         assert data["count"] > 0
 
-    def test_get_agent_info(self, client):
-        resp = client.get("/api/agents/requisition")
+    def test_get_agent_info(self, client, auth_headers):
+        resp = client.get("/api/agents/requisition", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
         assert data["agent_id"] == "requisition"
         assert "name" in data
 
-    def test_get_unknown_agent(self, client):
-        resp = client.get("/api/agents/nonexistent-agent")
+    def test_get_unknown_agent(self, client, auth_headers):
+        resp = client.get("/api/agents/nonexistent-agent", headers=auth_headers)
         assert resp.status_code == 404
+
+    def test_metrics_endpoint(self, client, auth_headers):
+        resp = client.get("/api/metrics", headers=auth_headers)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "requests_total" in data
+        assert "avg_latency_ms" in data
+
+
+# ============================================
+# Auth middleware
+# ============================================
+
+
+class TestAuthMiddleware:
+    def test_public_path_no_auth_needed(self, client):
+        """Health endpoint is public — no auth headers required."""
+        resp = client.get("/api/health")
+        assert resp.status_code == 200
+
+    def test_protected_path_requires_auth(self, client):
+        """Non-public endpoints return 401 without auth headers."""
+        resp = client.get("/api/agents")
+        assert resp.status_code == 401
+        assert "detail" in resp.json()
+
+    def test_auth_headers_accepted(self, client, auth_headers):
+        """Header-based auth works in development mode."""
+        resp = client.get("/api/agents", headers=auth_headers)
+        assert resp.status_code == 200
 
 
 # ============================================
@@ -233,7 +264,7 @@ class TestAuditEndpoints:
 
 class TestUserContext:
     def test_default_headers(self, client):
-        """Without auth headers, defaults are used."""
+        """Without auth headers, public endpoints still work."""
         resp = client.get("/api/health")
         assert resp.status_code == 200
 

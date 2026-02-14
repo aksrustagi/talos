@@ -32,6 +32,12 @@ hmmlearn>=0.3.0
 # XML processing (for cXML/Jaggaer)
 lxml>=5.1.0
 
+# Async SQLite (for audit log and procurement store)
+aiosqlite>=0.20.0
+
+# Authentication
+PyJWT>=2.8.0
+
 # Database clients
 convex>=0.5.0
 

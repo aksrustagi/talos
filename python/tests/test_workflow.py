@@ -4,21 +4,28 @@ These tests validate workflow logic without requiring a running Temporal server.
 They test the signal validation, vendor extraction, dataclass construction, and
 the workflow class initialization directly.
 
-Note: We import directly from workflows.requisition (not via the package
-__init__) to avoid the circular import through worker.py.
+Activities are now in their own package (activities/), so there's no circular
+import through worker.py.
 """
 
-import importlib
+import asyncio
 import sys
 import uuid
 from unittest.mock import MagicMock
 
 import pytest
 
-# Prevent the circular import chain (workflows.requisition -> worker -> agents -> langgraph)
-# by pre-populating worker in sys.modules with a mock before importing the module.
-if "worker" not in sys.modules:
-    sys.modules["worker"] = MagicMock()
+# The activities packages import procurement.store and agents, which may
+# pull in heavy dependencies. Mock them so tests stay lightweight.
+# We only need the workflow module itself, not the actual activity implementations.
+_activities_agent_mock = MagicMock()
+_activities_procurement_mock = MagicMock()
+if "activities" not in sys.modules:
+    sys.modules["activities"] = MagicMock()
+if "activities.agent_activities" not in sys.modules:
+    sys.modules["activities.agent_activities"] = _activities_agent_mock
+if "activities.procurement_activities" not in sys.modules:
+    sys.modules["activities.procurement_activities"] = _activities_procurement_mock
 
 import workflows.requisition as req_mod
 
@@ -74,8 +81,6 @@ class TestSignalValidation:
         wf = RequisitionToOrderWorkflow()
         assert wf.approval_decision is None
 
-        # Simulate calling the signal handler directly (bypassing Temporal runtime)
-        import asyncio
         asyncio.get_event_loop().run_until_complete(
             wf.human_approval("approve", "approver_001", "Looks good")
         )
@@ -86,7 +91,6 @@ class TestSignalValidation:
 
     def test_valid_reject(self):
         wf = RequisitionToOrderWorkflow()
-        import asyncio
         asyncio.get_event_loop().run_until_complete(
             wf.human_approval("reject", "approver_002", "Too expensive")
         )
@@ -96,7 +100,6 @@ class TestSignalValidation:
 
     def test_invalid_decision_ignored(self):
         wf = RequisitionToOrderWorkflow()
-        import asyncio
         asyncio.get_event_loop().run_until_complete(
             wf.human_approval("maybe", "approver_003")
         )
@@ -107,7 +110,6 @@ class TestSignalValidation:
 
     def test_empty_decision_ignored(self):
         wf = RequisitionToOrderWorkflow()
-        import asyncio
         asyncio.get_event_loop().run_until_complete(
             wf.human_approval("", "approver_004")
         )
@@ -122,7 +124,6 @@ class TestSignalValidation:
 class TestDuplicateSignalGuard:
     def test_second_signal_ignored(self):
         wf = RequisitionToOrderWorkflow()
-        import asyncio
         loop = asyncio.get_event_loop()
 
         # First signal: approve
@@ -144,7 +145,6 @@ class TestDuplicateSignalGuard:
 
     def test_invalid_then_valid(self):
         wf = RequisitionToOrderWorkflow()
-        import asyncio
         loop = asyncio.get_event_loop()
 
         # Invalid signal — ignored

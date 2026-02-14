@@ -28,13 +28,13 @@ from temporalio.common import RetryPolicy
 # We use string-based activity references via workflow.execute_activity()
 # with the functions imported here for type checking only.
 with workflow.unsafe.imports_passed_through():
-    from worker import (
+    from activities.agent_activities import (
         run_requisition_agent,
         run_vendor_selection_agent,
         run_price_compare_agent,
         run_approval_workflow_agent,
     )
-    from workflows.procurement_workflows import (
+    from activities.procurement_activities import (
         validate_budget,
         generate_purchase_order,
         send_po_to_vendor,

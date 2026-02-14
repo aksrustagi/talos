@@ -1,10 +1,13 @@
-# Local development setup for Temporal + Talos worker
+# Local development setup for Temporal + Talos
 #
-# Usage:
-#   docker compose up -d          # start Temporal server
-#   docker compose up worker      # start Talos worker (needs deps installed)
+# Quick start:
+#   docker compose up -d                # everything
+#   docker compose up temporal -d       # just Temporal server
+#   docker compose logs -f worker       # watch worker logs
 #
 # Temporal UI: http://localhost:8233
+# API:         http://localhost:8000/docs
+# Metrics:     http://localhost:8000/api/metrics
 
 services:
   temporal:
@@ -17,6 +20,12 @@ services:
       - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
     volumes:
       - temporal-data:/var/lib/temporal
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
 
   worker:
     build:
@@ -26,10 +35,13 @@ services:
       - TEMPORAL_HOST=temporal:7233
       - TEMPORAL_TASK_QUEUE=talos-procurement
       - TALOS_AUDIT_DB=/app/data/audit.db
+      - TALOS_PROCUREMENT_DB=/app/data/procurement.db
     depends_on:
-      - temporal
+      temporal:
+        condition: service_healthy
     volumes:
-      - audit-data:/app/data
+      - app-data:/app/data
+    restart: on-failure
 
   api:
     build:
@@ -42,11 +54,16 @@ services:
       - TEMPORAL_HOST=temporal:7233
       - TEMPORAL_TASK_QUEUE=talos-procurement
       - TALOS_AUDIT_DB=/app/data/audit.db
+      - TALOS_PROCUREMENT_DB=/app/data/procurement.db
+      # Uncomment to enable JWT auth:
+      # - TALOS_JWT_SECRET=your-secret-here
     depends_on:
-      - temporal
+      temporal:
+        condition: service_healthy
     volumes:
-      - audit-data:/app/data
+      - app-data:/app/data
+    restart: on-failure
 
 volumes:
   temporal-data:
-  audit-data:
+  app-data:
