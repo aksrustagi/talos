@@ -11,6 +11,7 @@ from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 import structlog
 
@@ -23,6 +24,7 @@ from agents import (
     ApprovalWorkflowAgent,
     VendorSelectionAgent,
 )
+from audit import AuditDatabase, AuditLogger, AuditPDFExporter
 
 # Configure structured logging
 structlog.configure(
@@ -123,6 +125,11 @@ async def get_current_user(request: Request) -> UserContext:
 # Application Setup
 # ============================================
 
+# Initialize audit trail
+audit_db = AuditDatabase()
+audit_logger = AuditLogger(db=audit_db)
+audit_pdf_exporter = AuditPDFExporter()
+
 # Initialize agents
 agents = {
     "price-watch": PriceWatchAgent(),
@@ -133,7 +140,7 @@ agents = {
     "vendor-selection": VendorSelectionAgent(),
 }
 
-orchestrator = AgentOrchestrator(agents)
+orchestrator = AgentOrchestrator(agents, audit_logger=audit_logger)
 
 
 @asynccontextmanager
@@ -183,12 +190,14 @@ async def chat(
         else:
             agent_id = await orchestrator.route_message(message.content)
 
-        # Build context
+        # Build context (includes audit metadata)
         context = {
             "user_name": user.email.split("@")[0],
             "department": user.department,
             "budget_code": message.context.get("budget_code", ""),
             "university_name": "University",  # Would come from config
+            "user_email": user.email,
+            "trigger_type": "user",
             **message.context,
         }
 
@@ -600,6 +609,177 @@ async def catalog_webhook(
 async def sync_catalog(vendor_id: str):
     """Background task to sync vendor catalog."""
     logger.info("Syncing catalog", vendor_id=vendor_id)
+
+
+# ============================================
+# Audit Trail Endpoints
+# ============================================
+
+@app.get("/audit/{requisition_id}", tags=["Audit"])
+async def get_audit_trail(
+    requisition_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    """
+    Get the complete AI decision chain for a requisition.
+
+    Returns every agent interaction, decision, and reasoning in
+    chronological order. Designed to answer:
+    - "Why did the system choose this vendor?"
+    - "Why was this price accepted?"
+    - "Who approved this and when?"
+    """
+    try:
+        result = audit_logger.get_decision_chain(requisition_id)
+
+        if result["total_entries"] == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No audit entries found for requisition: {requisition_id}",
+            )
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Audit trail query error", error=str(e), requisition_id=requisition_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/audit/export/{requisition_id}", tags=["Audit"])
+async def export_audit_report(
+    requisition_id: str,
+    include_full_io: bool = True,
+    include_tool_calls: bool = True,
+    user: UserContext = Depends(get_current_user),
+):
+    """
+    Generate a PDF audit report for a requisition.
+
+    Produces a formal report suitable for CFO review and federal
+    grant audits, including:
+    - Executive summary with key decisions
+    - Chronological decision timeline
+    - Detailed agent interaction logs
+    - Approval chain documentation
+    - AI cost accounting
+    - Data integrity notice
+    """
+    try:
+        result = audit_logger.get_decision_chain(requisition_id)
+
+        if result["total_entries"] == 0:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No audit entries found for requisition: {requisition_id}",
+            )
+
+        # Reconstruct AuditEntry objects from the decision chain dicts
+        from audit.models import AuditEntry
+        entries = [AuditEntry(**entry) for entry in result["decision_chain"]]
+
+        # Verify hash chain integrity for the report
+        chain_verification = audit_db.verify_chain_integrity()
+
+        pdf_bytes = audit_pdf_exporter.generate_report(
+            requisition_id=requisition_id,
+            entries=entries,
+            summary=result["summary"],
+            include_full_io=include_full_io,
+            include_tool_calls=include_tool_calls,
+            chain_verification=chain_verification,
+        )
+
+        filename = f"audit_report_{requisition_id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.pdf"
+
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Audit export error", error=str(e), requisition_id=requisition_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/audit/po/{purchase_order_id}", tags=["Audit"])
+async def get_audit_by_po(
+    purchase_order_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    """Get audit trail for a purchase order."""
+    try:
+        entries = audit_db.query_by_purchase_order(purchase_order_id)
+
+        if not entries:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No audit entries found for PO: {purchase_order_id}",
+            )
+
+        return {
+            "purchase_order_id": purchase_order_id,
+            "total_entries": len(entries),
+            "entries": [e.model_dump() for e in entries],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Audit PO query error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/audit/contract/{contract_id}", tags=["Audit"])
+async def get_audit_by_contract(
+    contract_id: str,
+    user: UserContext = Depends(get_current_user),
+):
+    """Get audit trail for a contract."""
+    try:
+        entries = audit_db.query_by_contract(contract_id)
+
+        if not entries:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No audit entries found for contract: {contract_id}",
+            )
+
+        return {
+            "contract_id": contract_id,
+            "total_entries": len(entries),
+            "entries": [e.model_dump() for e in entries],
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Audit contract query error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/audit/verify/integrity", tags=["Audit"])
+async def verify_audit_integrity(
+    user: UserContext = Depends(get_current_user),
+):
+    """
+    Verify the cryptographic hash chain integrity of the entire audit log.
+
+    Returns whether any entries have been tampered with, inserted
+    out of order, or removed. Uses SHA-256 hash chain verification.
+    """
+    try:
+        result = audit_db.verify_chain_integrity()
+        return result
+    except Exception as e:
+        logger.error("Audit integrity verification error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ============================================

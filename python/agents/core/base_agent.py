@@ -7,13 +7,18 @@ Provides the foundational class for all procurement AI agents using LangGraph.
 from typing import TypedDict, Annotated, Sequence, Literal, Optional, Callable, Any
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
+import json
 import operator
+import re
+import time
 
 from langgraph.graph import Graph, StateGraph, END
 from langgraph.prebuilt import ToolExecutor, ToolInvocation
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
+
+from audit.logger import AuditLogger
 
 
 # ============================================
@@ -243,6 +248,8 @@ class ProcurementAgent(ABC):
         user_id: str,
         university_id: str,
         context: Optional[dict] = None,
+        audit_logger: Optional[AuditLogger] = None,
+        execution_id: Optional[str] = None,
     ) -> dict:
         """
         Run the agent with a user message.
@@ -252,10 +259,14 @@ class ProcurementAgent(ABC):
             user_id: ID of the user making the request
             university_id: University context
             context: Additional context for the agent
+            audit_logger: Optional AuditLogger for recording the interaction
+            execution_id: Optional execution ID to group related audit entries
 
         Returns:
             Dict with response and any actions taken
         """
+        start_time = time.monotonic()
+
         # Initialize state
         initial_state: AgentState = {
             "messages": [HumanMessage(content=message)],
@@ -268,24 +279,284 @@ class ProcurementAgent(ABC):
             "completed": False,
         }
 
+        # Build the full input text for audit (system prompt + user message)
+        full_input = self._build_system_prompt(initial_state) + "\n\n---\nUser: " + message
+
         # Run the graph
         final_state = await self.graph.ainvoke(initial_state)
+
+        duration_ms = int((time.monotonic() - start_time) * 1000)
 
         # Extract response
         last_message = final_state["messages"][-1]
         response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
 
+        # Extract token usage from LangChain response metadata
+        input_tokens, output_tokens = self._extract_token_usage(final_state["messages"])
+
+        # Collect all tool calls and results
+        all_tool_calls = [
+            tc for msg in final_state["messages"]
+            if hasattr(msg, "tool_calls")
+            for tc in msg.tool_calls
+        ]
+        all_tool_results = final_state.get("tool_results", [])
+
+        # Extract decision and reasoning from the response
+        decision, reasoning = self._extract_decision(response_text, all_tool_calls)
+
+        # Extract procurement IDs - from context first, then auto-detect from content
+        requisition_id = (context or {}).get("requisition_id")
+        purchase_order_id = (context or {}).get("purchase_order_id")
+        contract_id = (context or {}).get("contract_id")
+
+        # Auto-detect procurement IDs from message, response, and tool calls
+        all_text = message + " " + response_text
+        for tc in all_tool_calls:
+            args = tc.get("args", {})
+            all_text += " " + json.dumps(args, default=str)
+
+        if not requisition_id:
+            requisition_id = self._extract_id(all_text, r"REQ-\d{4}-\d+")
+            if not requisition_id:
+                # Also check tool call args for requisition_id fields
+                for tc in all_tool_calls:
+                    rid = tc.get("args", {}).get("requisition_id")
+                    if rid:
+                        requisition_id = rid
+                        break
+
+        if not purchase_order_id:
+            purchase_order_id = self._extract_id(all_text, r"PO-\d{4}-\d+")
+
+        if not contract_id:
+            contract_id = self._extract_id(all_text, r"CON-\d{4}-\d+")
+
+        # Log to audit trail
+        if audit_logger:
+            # Serialize tool results for audit
+            serialized_tool_results = []
+            for tr in all_tool_results:
+                if hasattr(tr, "content"):
+                    serialized_tool_results.append({
+                        "tool_call_id": getattr(tr, "tool_call_id", None),
+                        "content": tr.content,
+                    })
+                else:
+                    serialized_tool_results.append(str(tr))
+
+            audit_logger.log_agent_call(
+                agent_name=self.config.agent_id,
+                agent_tier=self.config.tier,
+                input_text=full_input,
+                output_text=response_text,
+                model_used=self.config.model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                triggered_by=user_id,
+                trigger_type=(context or {}).get("trigger_type", "user"),
+                decision=decision,
+                reasoning=reasoning,
+                tool_calls=all_tool_calls if all_tool_calls else None,
+                tool_results=serialized_tool_results if serialized_tool_results else None,
+                requisition_id=requisition_id,
+                purchase_order_id=purchase_order_id,
+                contract_id=contract_id,
+                user_email=(context or {}).get("user_email"),
+                user_department=(context or {}).get("department"),
+                university_id=university_id,
+                execution_id=execution_id,
+                execution_duration_ms=duration_ms,
+            )
+
         return {
             "response": response_text,
             "agent_id": self.config.agent_id,
-            "tool_calls": [
-                tc for msg in final_state["messages"]
-                if hasattr(msg, "tool_calls")
-                for tc in msg.tool_calls
-            ],
-            "tool_results": final_state.get("tool_results", []),
+            "tool_calls": all_tool_calls,
+            "tool_results": all_tool_results,
             "pending_approval": final_state.get("pending_approval"),
         }
+
+    @staticmethod
+    def _extract_token_usage(messages: list) -> tuple[Optional[int], Optional[int]]:
+        """
+        Extract token usage from LangChain AIMessage response_metadata.
+
+        LangChain's ChatAnthropic populates response_metadata with usage info:
+          {"usage": {"input_tokens": N, "output_tokens": N}}
+        Accumulates across all AI messages (multi-turn tool use).
+        """
+        total_input = 0
+        total_output = 0
+        found_any = False
+
+        for msg in messages:
+            if not isinstance(msg, AIMessage):
+                continue
+
+            metadata = getattr(msg, "response_metadata", None) or {}
+            usage = metadata.get("usage", {})
+
+            if usage.get("input_tokens") is not None:
+                total_input += usage["input_tokens"]
+                found_any = True
+            if usage.get("output_tokens") is not None:
+                total_output += usage["output_tokens"]
+                found_any = True
+
+            # Also check usage_metadata (newer LangChain versions)
+            usage_meta = getattr(msg, "usage_metadata", None) or {}
+            if usage_meta.get("input_tokens") is not None:
+                if not found_any:
+                    total_input += usage_meta["input_tokens"]
+                    found_any = True
+            if usage_meta.get("output_tokens") is not None:
+                if not found_any:
+                    total_output += usage_meta["output_tokens"]
+
+        if not found_any:
+            return None, None
+        return total_input, total_output
+
+    @staticmethod
+    def _extract_id(text: str, pattern: str) -> Optional[str]:
+        """Extract a procurement ID matching a regex pattern from text."""
+        match = re.search(pattern, text)
+        return match.group(0) if match else None
+
+    # Maps tool names to (decision_type, reasoning_template) for structured extraction.
+    # Subclasses can override or extend via class attribute.
+    DECISION_TOOL_MAP: dict[str, dict] = {
+        "create_requisition": {
+            "decision": "requisition_created",
+            "reasoning_template": "Created requisition with {item_count} items",
+            "reasoning_args": lambda args: {"item_count": len(args.get("items", []))},
+        },
+        "process_approval": {
+            "decision_from_args": "decision",
+            "decision_fallback": "approval_processed",
+            "reasoning_from_args": "comments",
+            "reasoning_fallback": "Approval processed",
+        },
+        "route_approval": {
+            "decision": "routed_for_approval",
+            "reasoning_template": "Routed for approval (amount: ${total_amount})",
+            "reasoning_args": lambda args: {"total_amount": args.get("total_amount", "N/A")},
+        },
+        "score_vendor": {
+            "decision": "vendor_evaluated",
+            "reasoning_template": "Evaluated vendor {vendor_id}",
+            "reasoning_args": lambda args: {"vendor_id": args.get("vendor_id", "N/A")},
+        },
+        "find_diverse_suppliers": {
+            "decision": "diverse_suppliers_searched",
+            "reasoning_template": "Searched diverse suppliers for category {category}",
+            "reasoning_args": lambda args: {"category": args.get("category", "N/A")},
+        },
+        "assess_vendor_risk": {
+            "decision": "vendor_risk_assessed",
+            "reasoning_template": "Assessed risk for vendor {vendor_id}",
+            "reasoning_args": lambda args: {"vendor_id": args.get("vendor_id", "N/A")},
+        },
+        "create_price_alert": {
+            "decision": "price_alert_created",
+            "reasoning_template": "Price alert created",
+        },
+        "escalate_approval": {
+            "decision": "approval_escalated",
+            "reasoning_from_args": "reason",
+            "reasoning_fallback": "SLA breach",
+        },
+        "check_budget": {
+            "decision": "budget_checked",
+            "reasoning_template": "Budget check for {budget_code}: ${amount}",
+            "reasoning_args": lambda args: {
+                "budget_code": args.get("budget_code", "N/A"),
+                "amount": args.get("amount", "N/A"),
+            },
+        },
+        "validate_policy": {
+            "decision": "policy_validated",
+            "reasoning_template": "Policy validation completed",
+        },
+        "compare_vendor_prices": {
+            "decision": "prices_compared",
+            "reasoning_template": "Cross-vendor price comparison completed",
+        },
+        "get_price_history": {
+            "decision": "price_history_analyzed",
+            "reasoning_template": "Historical price analysis completed",
+        },
+        "recommend_purchase_timing": {
+            "decision": "timing_recommended",
+            "reasoning_template": "Purchase timing recommendation generated",
+        },
+    }
+
+    def _extract_decision(
+        self, response_text: str, tool_calls: list
+    ) -> tuple[Optional[str], Optional[str]]:
+        """
+        Extract the decision and reasoning from agent output.
+
+        Uses DECISION_TOOL_MAP for structured extraction from tool calls,
+        then falls back to response text analysis.
+        Returns (decision, reasoning) tuple.
+        """
+        decision = None
+        reasoning = None
+
+        # Check tool calls against the structured map
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("args", {})
+
+            mapping = self.DECISION_TOOL_MAP.get(name)
+            if not mapping:
+                continue
+
+            # Extract decision
+            if "decision_from_args" in mapping:
+                decision = args.get(
+                    mapping["decision_from_args"],
+                    mapping.get("decision_fallback", name),
+                )
+            else:
+                decision = mapping.get("decision", name)
+
+            # Extract reasoning
+            if "reasoning_from_args" in mapping:
+                reasoning = args.get(
+                    mapping["reasoning_from_args"],
+                    mapping.get("reasoning_fallback"),
+                )
+            elif "reasoning_template" in mapping:
+                template = mapping["reasoning_template"]
+                if "reasoning_args" in mapping:
+                    template_args = mapping["reasoning_args"](args)
+                    reasoning = template.format(**template_args)
+                else:
+                    reasoning = template
+
+        # If no decision from tools, try to infer from response
+        if not decision and response_text:
+            lower = response_text.lower()
+            if "approved" in lower and "not approved" not in lower:
+                decision = "approved"
+            elif "rejected" in lower:
+                decision = "rejected"
+            elif "recommend" in lower:
+                decision = "recommendation_made"
+            elif "alert" in lower and "created" in lower:
+                decision = "alert_created"
+            elif "escalat" in lower:
+                decision = "escalated"
+
+        # Use first 500 chars of response as reasoning fallback
+        if not reasoning and response_text:
+            reasoning = response_text[:500]
+
+        return decision, reasoning
 
 
 # ============================================
@@ -333,10 +604,16 @@ class AgentOrchestrator:
     - Sequential agent chains
     - Parallel agent execution
     - Dynamic routing based on intent
+    - Audit logging for all agent interactions
     """
 
-    def __init__(self, agents: dict[str, ProcurementAgent]):
+    def __init__(
+        self,
+        agents: dict[str, ProcurementAgent],
+        audit_logger: Optional[AuditLogger] = None,
+    ):
         self.agents = agents
+        self.audit_logger = audit_logger
 
         # Intent routing patterns
         self.intent_patterns = {
@@ -368,12 +645,24 @@ class AgentOrchestrator:
         university_id: str,
         context: Optional[dict] = None,
     ) -> dict:
-        """Execute a single agent."""
+        """Execute a single agent with audit logging."""
         if agent_id not in self.agents:
             raise ValueError(f"Unknown agent: {agent_id}")
 
+        # Generate execution ID for grouping audit entries
+        execution_id = None
+        if self.audit_logger:
+            execution_id = self.audit_logger.start_execution()
+
         agent = self.agents[agent_id]
-        return await agent.run(message, user_id, university_id, context)
+        return await agent.run(
+            message,
+            user_id,
+            university_id,
+            context,
+            audit_logger=self.audit_logger,
+            execution_id=execution_id,
+        )
 
     async def execute_chain(
         self,
@@ -383,18 +672,28 @@ class AgentOrchestrator:
         university_id: str,
         context: Optional[dict] = None,
     ) -> list[dict]:
-        """Execute a chain of agents sequentially."""
+        """Execute a chain of agents sequentially with shared audit execution ID."""
         results = []
         current_context = context or {}
         current_message = message
 
+        # All agents in a chain share one execution ID for traceability
+        execution_id = None
+        if self.audit_logger:
+            execution_id = self.audit_logger.start_execution()
+
         for agent_id in agent_ids:
-            result = await self.execute(
-                agent_id,
+            if agent_id not in self.agents:
+                raise ValueError(f"Unknown agent: {agent_id}")
+
+            agent = self.agents[agent_id]
+            result = await agent.run(
                 current_message,
                 user_id,
                 university_id,
                 current_context,
+                audit_logger=self.audit_logger,
+                execution_id=execution_id,
             )
             results.append(result)
 
@@ -413,13 +712,29 @@ class AgentOrchestrator:
         university_id: str,
         context: Optional[dict] = None,
     ) -> list[dict]:
-        """Execute multiple agents in parallel."""
+        """Execute multiple agents in parallel with shared audit execution ID."""
         import asyncio
 
-        tasks = [
-            self.execute(agent_id, message, user_id, university_id, context)
-            for agent_id in agent_ids
-        ]
+        # Shared execution ID so parallel calls are grouped in audit
+        execution_id = None
+        if self.audit_logger:
+            execution_id = self.audit_logger.start_execution()
+
+        tasks = []
+        for agent_id in agent_ids:
+            if agent_id not in self.agents:
+                raise ValueError(f"Unknown agent: {agent_id}")
+            agent = self.agents[agent_id]
+            tasks.append(
+                agent.run(
+                    message,
+                    user_id,
+                    university_id,
+                    context,
+                    audit_logger=self.audit_logger,
+                    execution_id=execution_id,
+                )
+            )
 
         return await asyncio.gather(*tasks)
 

@@ -1,0 +1,4 @@
+# Audit trail database files - never commit these
+*.db
+*.db-wal
+*.db-shm
