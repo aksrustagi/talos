@@ -7,13 +7,17 @@ Provides the foundational class for all procurement AI agents using LangGraph.
 from typing import TypedDict, Annotated, Sequence, Literal, Optional, Callable, Any
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
+import json
 import operator
+import time
 
 from langgraph.graph import Graph, StateGraph, END
 from langgraph.prebuilt import ToolExecutor, ToolInvocation
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
+
+from audit.logger import AuditLogger
 
 
 # ============================================
@@ -243,6 +247,8 @@ class ProcurementAgent(ABC):
         user_id: str,
         university_id: str,
         context: Optional[dict] = None,
+        audit_logger: Optional[AuditLogger] = None,
+        execution_id: Optional[str] = None,
     ) -> dict:
         """
         Run the agent with a user message.
@@ -252,10 +258,14 @@ class ProcurementAgent(ABC):
             user_id: ID of the user making the request
             university_id: University context
             context: Additional context for the agent
+            audit_logger: Optional AuditLogger for recording the interaction
+            execution_id: Optional execution ID to group related audit entries
 
         Returns:
             Dict with response and any actions taken
         """
+        start_time = time.monotonic()
+
         # Initialize state
         initial_state: AgentState = {
             "messages": [HumanMessage(content=message)],
@@ -268,24 +278,127 @@ class ProcurementAgent(ABC):
             "completed": False,
         }
 
+        # Build the full input text for audit (system prompt + user message)
+        full_input = self._build_system_prompt(initial_state) + "\n\n---\nUser: " + message
+
         # Run the graph
         final_state = await self.graph.ainvoke(initial_state)
+
+        duration_ms = int((time.monotonic() - start_time) * 1000)
 
         # Extract response
         last_message = final_state["messages"][-1]
         response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
 
+        # Collect all tool calls and results
+        all_tool_calls = [
+            tc for msg in final_state["messages"]
+            if hasattr(msg, "tool_calls")
+            for tc in msg.tool_calls
+        ]
+        all_tool_results = final_state.get("tool_results", [])
+
+        # Extract decision and reasoning from the response
+        decision, reasoning = self._extract_decision(response_text, all_tool_calls)
+
+        # Extract procurement IDs from context
+        requisition_id = (context or {}).get("requisition_id")
+        purchase_order_id = (context or {}).get("purchase_order_id")
+        contract_id = (context or {}).get("contract_id")
+
+        # Log to audit trail
+        if audit_logger:
+            # Serialize tool results for audit
+            serialized_tool_results = []
+            for tr in all_tool_results:
+                if hasattr(tr, "content"):
+                    serialized_tool_results.append({
+                        "tool_call_id": getattr(tr, "tool_call_id", None),
+                        "content": tr.content,
+                    })
+                else:
+                    serialized_tool_results.append(str(tr))
+
+            audit_logger.log_agent_call(
+                agent_name=self.config.agent_id,
+                agent_tier=self.config.tier,
+                input_text=full_input,
+                output_text=response_text,
+                model_used=self.config.model,
+                triggered_by=user_id,
+                trigger_type=(context or {}).get("trigger_type", "user"),
+                decision=decision,
+                reasoning=reasoning,
+                tool_calls=all_tool_calls if all_tool_calls else None,
+                tool_results=serialized_tool_results if serialized_tool_results else None,
+                requisition_id=requisition_id,
+                purchase_order_id=purchase_order_id,
+                contract_id=contract_id,
+                user_email=(context or {}).get("user_email"),
+                user_department=(context or {}).get("department"),
+                university_id=university_id,
+                execution_id=execution_id,
+                execution_duration_ms=duration_ms,
+            )
+
         return {
             "response": response_text,
             "agent_id": self.config.agent_id,
-            "tool_calls": [
-                tc for msg in final_state["messages"]
-                if hasattr(msg, "tool_calls")
-                for tc in msg.tool_calls
-            ],
-            "tool_results": final_state.get("tool_results", []),
+            "tool_calls": all_tool_calls,
+            "tool_results": all_tool_results,
             "pending_approval": final_state.get("pending_approval"),
         }
+
+    def _extract_decision(
+        self, response_text: str, tool_calls: list
+    ) -> tuple[Optional[str], Optional[str]]:
+        """
+        Extract the decision and reasoning from agent output.
+
+        Looks for common decision patterns in tool calls and response text.
+        Returns (decision, reasoning) tuple.
+        """
+        decision = None
+        reasoning = None
+
+        # Check tool calls for decision indicators
+        for tc in tool_calls:
+            name = tc.get("name", "")
+            args = tc.get("args", {})
+
+            if name == "create_requisition":
+                decision = "requisition_created"
+                reasoning = f"Created requisition with {len(args.get('items', []))} items"
+            elif name == "process_approval":
+                decision = args.get("decision", "approval_processed")
+                reasoning = args.get("comments", "Approval processed")
+            elif name == "route_approval":
+                decision = "routed_for_approval"
+                reasoning = f"Routed for approval (amount: ${args.get('total_amount', 'N/A')})"
+            elif name == "score_vendor":
+                decision = "vendor_evaluated"
+                reasoning = f"Evaluated vendor {args.get('vendor_id', 'N/A')}"
+            elif name == "create_price_alert":
+                decision = "price_alert_created"
+            elif name == "escalate_approval":
+                decision = "approval_escalated"
+                reasoning = args.get("reason", "SLA breach")
+
+        # If no decision from tools, try to infer from response
+        if not decision and response_text:
+            lower = response_text.lower()
+            if "approved" in lower:
+                decision = "approved"
+            elif "rejected" in lower:
+                decision = "rejected"
+            elif "recommend" in lower:
+                decision = "recommendation_made"
+
+        # Use first 500 chars of response as reasoning fallback
+        if not reasoning and response_text:
+            reasoning = response_text[:500]
+
+        return decision, reasoning
 
 
 # ============================================
@@ -333,10 +446,16 @@ class AgentOrchestrator:
     - Sequential agent chains
     - Parallel agent execution
     - Dynamic routing based on intent
+    - Audit logging for all agent interactions
     """
 
-    def __init__(self, agents: dict[str, ProcurementAgent]):
+    def __init__(
+        self,
+        agents: dict[str, ProcurementAgent],
+        audit_logger: Optional[AuditLogger] = None,
+    ):
         self.agents = agents
+        self.audit_logger = audit_logger
 
         # Intent routing patterns
         self.intent_patterns = {
@@ -368,12 +487,24 @@ class AgentOrchestrator:
         university_id: str,
         context: Optional[dict] = None,
     ) -> dict:
-        """Execute a single agent."""
+        """Execute a single agent with audit logging."""
         if agent_id not in self.agents:
             raise ValueError(f"Unknown agent: {agent_id}")
 
+        # Generate execution ID for grouping audit entries
+        execution_id = None
+        if self.audit_logger:
+            execution_id = self.audit_logger.start_execution()
+
         agent = self.agents[agent_id]
-        return await agent.run(message, user_id, university_id, context)
+        return await agent.run(
+            message,
+            user_id,
+            university_id,
+            context,
+            audit_logger=self.audit_logger,
+            execution_id=execution_id,
+        )
 
     async def execute_chain(
         self,
@@ -383,18 +514,28 @@ class AgentOrchestrator:
         university_id: str,
         context: Optional[dict] = None,
     ) -> list[dict]:
-        """Execute a chain of agents sequentially."""
+        """Execute a chain of agents sequentially with shared audit execution ID."""
         results = []
         current_context = context or {}
         current_message = message
 
+        # All agents in a chain share one execution ID for traceability
+        execution_id = None
+        if self.audit_logger:
+            execution_id = self.audit_logger.start_execution()
+
         for agent_id in agent_ids:
-            result = await self.execute(
-                agent_id,
+            if agent_id not in self.agents:
+                raise ValueError(f"Unknown agent: {agent_id}")
+
+            agent = self.agents[agent_id]
+            result = await agent.run(
                 current_message,
                 user_id,
                 university_id,
                 current_context,
+                audit_logger=self.audit_logger,
+                execution_id=execution_id,
             )
             results.append(result)
 
@@ -413,13 +554,29 @@ class AgentOrchestrator:
         university_id: str,
         context: Optional[dict] = None,
     ) -> list[dict]:
-        """Execute multiple agents in parallel."""
+        """Execute multiple agents in parallel with shared audit execution ID."""
         import asyncio
 
-        tasks = [
-            self.execute(agent_id, message, user_id, university_id, context)
-            for agent_id in agent_ids
-        ]
+        # Shared execution ID so parallel calls are grouped in audit
+        execution_id = None
+        if self.audit_logger:
+            execution_id = self.audit_logger.start_execution()
+
+        tasks = []
+        for agent_id in agent_ids:
+            if agent_id not in self.agents:
+                raise ValueError(f"Unknown agent: {agent_id}")
+            agent = self.agents[agent_id]
+            tasks.append(
+                agent.run(
+                    message,
+                    user_id,
+                    university_id,
+                    context,
+                    audit_logger=self.audit_logger,
+                    execution_id=execution_id,
+                )
+            )
 
         return await asyncio.gather(*tasks)
 
