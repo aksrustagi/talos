@@ -1,12 +1,15 @@
 """
 Talos Pipeline — Chains agents together. This IS the orchestration.
-No Temporal, no LangGraph. Just async function calls.
+
+When Temporal is enabled (config.enable_temporal=True), pipelines run as
+durable Temporal workflows. Otherwise, the default direct async path is used.
 """
 from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
 from .core import TalosAgents
+from ..config import get_config
 from ..schemas import (
     RequisitionPipeline, ParsedRequisition, ComplianceResult,
     AggregationOpportunity, PriceTrackingResult, SavingsRecord,
@@ -151,6 +154,96 @@ class RequisitionPipelineRunner:
         pipe.total_llm_cost = sum(c.cost for c in calls)
 
         return pipe
+
+    async def start_temporal_workflow(
+        self,
+        raw_text: str,
+        requester_name: str = "",
+        department: str = "",
+        channel: str = "portal",
+        recent_orders: list[dict] | None = None,
+        auto_generate_po: bool = False,
+        pipeline_id: str | None = None,
+    ) -> RequisitionPipeline:
+        """
+        Start a Temporal workflow for the pipeline. Returns immediately with
+        workflow_id/workflow_run_id populated. The actual processing happens
+        asynchronously in the Temporal worker.
+        """
+        from temporalio.client import Client
+        from ..workflows.requisition_workflow import RequisitionWorkflow, RequisitionWorkflowInput
+
+        config = get_config()
+
+        pipe = RequisitionPipeline(
+            raw_text=raw_text,
+            source_channel=channel,
+            requester_name=requester_name,
+            department=department,
+        )
+        if pipeline_id:
+            pipe.id = pipeline_id
+
+        client = await Client.connect(
+            config.temporal_address,
+            namespace=config.temporal_namespace,
+        )
+
+        workflow_input = RequisitionWorkflowInput(
+            raw_text=raw_text,
+            requester_name=requester_name,
+            department=department,
+            channel=channel,
+            recent_orders=recent_orders,
+            auto_generate_po=auto_generate_po,
+            pipeline_id=pipe.id,
+        )
+
+        handle = await client.start_workflow(
+            RequisitionWorkflow.run,
+            workflow_input,
+            id=f"talos-pipeline-{pipe.id}",
+            task_queue=config.temporal_task_queue,
+        )
+
+        pipe.workflow_id = handle.id
+        pipe.workflow_run_id = handle.result_run_id
+        pipe.status = "workflow_started"
+
+        log.info(f"[{pipe.id}] Temporal workflow started: {handle.id}")
+        return pipe
+
+    async def dispatch(
+        self,
+        raw_text: str,
+        requester_name: str = "",
+        department: str = "",
+        channel: str = "portal",
+        recent_orders: list[dict] | None = None,
+        auto_generate_po: bool = False,
+    ) -> RequisitionPipeline:
+        """
+        Smart dispatch: uses Temporal if enabled, otherwise direct async.
+        This is the recommended entry point for new code.
+        """
+        config = get_config()
+        if config.enable_temporal:
+            return await self.start_temporal_workflow(
+                raw_text=raw_text,
+                requester_name=requester_name,
+                department=department,
+                channel=channel,
+                recent_orders=recent_orders,
+                auto_generate_po=auto_generate_po,
+            )
+        return await self.process(
+            raw_text=raw_text,
+            requester_name=requester_name,
+            department=department,
+            channel=channel,
+            recent_orders=recent_orders,
+            auto_generate_po=auto_generate_po,
+        )
 
     async def close(self):
         await self.agents.close()

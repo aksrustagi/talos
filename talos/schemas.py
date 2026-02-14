@@ -230,6 +230,10 @@ class RequisitionPipeline(BaseModel):
     savings: SavingsRecord | None = None
     purchase_order: PurchaseOrder | None = None
 
+    # Temporal workflow tracking (populated when Temporal is enabled)
+    workflow_id: str | None = None
+    workflow_run_id: str | None = None
+
     # Tracking
     total_llm_cost: float = 0.0
     agent_calls: list[dict] = []

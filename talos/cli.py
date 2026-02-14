@@ -10,10 +10,12 @@ Game-changing decision #9: ONE-COMMAND EXPERIENCE
 - `talos cost-test` — Benchmark models
 - `talos info` — Show configuration
 - `talos setup` — Interactive onboarding (Decision #10)
+- `talos worker` — Start Temporal worker (optional)
 
 Usage:
     python -m talos chat           Start interactive procurement chat
     python -m talos server         Start FastAPI server
+    python -m talos worker         Start Temporal worker (requires Temporal)
     python -m talos demo           Full pipeline demo
     python -m talos test           Test all 7 agents
     python -m talos cost-test      Benchmark LLM costs
@@ -503,6 +505,31 @@ def run_server():
 
 
 # ==================================================================
+# TEMPORAL WORKER (Optional durable execution)
+# ==================================================================
+
+def run_temporal_worker():
+    """Start the Temporal activity worker."""
+    from .config import get_config
+    config = get_config()
+
+    if not config.enable_temporal:
+        print("\n  Temporal is not enabled.")
+        print("  Set TALOS_ENABLE_TEMPORAL=true in your .env to enable.")
+        print("  Also ensure a Temporal server is running.\n")
+        return
+
+    try:
+        from .workflows.worker import run_worker
+    except ImportError:
+        print("\n  temporalio package not installed.")
+        print("  Install it: pip install temporalio\n")
+        return
+
+    asyncio.run(run_worker())
+
+
+# ==================================================================
 # INFO
 # ==================================================================
 
@@ -539,6 +566,13 @@ def show_info():
     for name, tier, desc in agent_tiers:
         print(f"    [{tier:6s}] {name:25s} {desc}")
     print()
+    print(f"  Temporal Workflows:")
+    print(f"    Enabled:    {'YES' if config.enable_temporal else 'NO'}")
+    if config.enable_temporal:
+        print(f"    Address:    {config.temporal_address}")
+        print(f"    Namespace:  {config.temporal_namespace}")
+        print(f"    Task Queue: {config.temporal_task_queue}")
+    print()
 
 
 # ==================================================================
@@ -556,6 +590,7 @@ def main():
   Usage:
     python -m talos chat           Talk to Talos (primary interface)
     python -m talos server         Start API server (http://localhost:8000)
+    python -m talos worker         Start Temporal worker (optional)
     python -m talos demo           Full pipeline demo
     python -m talos test           Test all agents with sample data
     python -m talos cost-test      Benchmark LLM costs across models
@@ -580,6 +615,8 @@ def main():
         asyncio.run(run_cost_benchmark())
     elif cmd == "server":
         run_server()
+    elif cmd == "worker":
+        run_temporal_worker()
     elif cmd == "info":
         show_info()
     elif cmd == "setup":

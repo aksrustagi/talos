@@ -458,6 +458,70 @@ async def handle_slack_action(request: Request):
 
 
 # =====================================================================
+# TEMPORAL WORKFLOW ENDPOINTS (Optional — active when enable_temporal=True)
+# =====================================================================
+
+class WorkflowSignalRequest(BaseModel):
+    pipeline_id: str = Field(..., max_length=100)
+
+@app.post("/workflows/approve", dependencies=[Depends(verify_api_key)])
+async def workflow_approve(req: WorkflowSignalRequest):
+    """Send approval signal to a running Temporal workflow."""
+    config = get_config()
+    if not config.enable_temporal:
+        raise HTTPException(400, "Temporal is not enabled. Set TALOS_ENABLE_TEMPORAL=true.")
+
+    try:
+        from temporalio.client import Client
+
+        client = await Client.connect(config.temporal_address, namespace=config.temporal_namespace)
+        handle = client.get_workflow_handle(f"talos-pipeline-{req.pipeline_id}")
+        await handle.signal("approve")
+        return {"status": "approved", "pipeline_id": req.pipeline_id}
+    except Exception as e:
+        log.error(f"Failed to signal approval for {req.pipeline_id}: {e}")
+        raise HTTPException(500, f"Failed to signal workflow: {e}")
+
+
+@app.post("/workflows/reject", dependencies=[Depends(verify_api_key)])
+async def workflow_reject(req: WorkflowSignalRequest):
+    """Send rejection signal to a running Temporal workflow."""
+    config = get_config()
+    if not config.enable_temporal:
+        raise HTTPException(400, "Temporal is not enabled. Set TALOS_ENABLE_TEMPORAL=true.")
+
+    try:
+        from temporalio.client import Client
+
+        client = await Client.connect(config.temporal_address, namespace=config.temporal_namespace)
+        handle = client.get_workflow_handle(f"talos-pipeline-{req.pipeline_id}")
+        await handle.signal("reject")
+        return {"status": "rejected", "pipeline_id": req.pipeline_id}
+    except Exception as e:
+        log.error(f"Failed to signal rejection for {req.pipeline_id}: {e}")
+        raise HTTPException(500, f"Failed to signal workflow: {e}")
+
+
+@app.get("/workflows/{pipeline_id}/status", dependencies=[Depends(verify_api_key)])
+async def workflow_status(pipeline_id: str):
+    """Query the current status of a running Temporal workflow."""
+    config = get_config()
+    if not config.enable_temporal:
+        raise HTTPException(400, "Temporal is not enabled. Set TALOS_ENABLE_TEMPORAL=true.")
+
+    try:
+        from temporalio.client import Client
+
+        client = await Client.connect(config.temporal_address, namespace=config.temporal_namespace)
+        handle = client.get_workflow_handle(f"talos-pipeline-{pipeline_id}")
+        status = await handle.query("get_status")
+        return status
+    except Exception as e:
+        log.error(f"Failed to query workflow status for {pipeline_id}: {e}")
+        raise HTTPException(500, f"Failed to query workflow: {e}")
+
+
+# =====================================================================
 # DASHBOARD & OPERATIONAL ENDPOINTS
 # =====================================================================
 
@@ -483,6 +547,8 @@ async def health():
         "api_key_set": bool(config.openrouter_api_key),
         "auth_enabled": bool(config.api_keys),
         "slack_configured": bool(config.slack_webhook_url),
+        "temporal_enabled": config.enable_temporal,
+        "temporal_address": config.temporal_address if config.enable_temporal else None,
         "db": config.db_path,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

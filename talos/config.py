@@ -49,6 +49,12 @@ class Config(BaseModel):
     smtp_password: str = ""
     smtp_from: str = ""
 
+    # Temporal workflow orchestration (optional)
+    enable_temporal: bool = False
+    temporal_address: str = "localhost:7233"
+    temporal_namespace: str = "default"
+    temporal_task_queue: str = "talos-pipeline"
+
     @field_validator("log_level")
     @classmethod
     def validate_log_level(cls, v: str) -> str:
@@ -84,6 +90,10 @@ class Config(BaseModel):
             smtp_user=os.getenv("TALOS_SMTP_USER", ""),
             smtp_password=os.getenv("TALOS_SMTP_PASSWORD", ""),
             smtp_from=os.getenv("TALOS_SMTP_FROM", ""),
+            enable_temporal=os.getenv("TALOS_ENABLE_TEMPORAL", "").lower() in ("1", "true", "yes"),
+            temporal_address=os.getenv("TALOS_TEMPORAL_ADDRESS", "localhost:7233"),
+            temporal_namespace=os.getenv("TALOS_TEMPORAL_NAMESPACE", "default"),
+            temporal_task_queue=os.getenv("TALOS_TEMPORAL_TASK_QUEUE", "talos-pipeline"),
         )
 
     def get_model(self, tier: str) -> str:
