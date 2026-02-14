@@ -18,11 +18,14 @@ Model tiers by agent complexity:
 import json
 import logging
 import os
+import time
 from enum import Enum
-from typing import Optional
+from typing import Optional, Union
 
 import httpx
 from pydantic import BaseModel
+
+from llm.cost_tracker import get_cost_tracker, LLMCallRecord
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,27 @@ class LLMConfig(BaseModel):
     timeout: int = 120
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """Remove markdown code fences from LLM output."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[-1]
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+    return cleaned
+
+
+def _extract_json(text: str) -> str:
+    """Try to extract a JSON object from mixed text."""
+    try:
+        start_idx = text.index("{")
+        end_idx = text.rindex("}") + 1
+        return text[start_idx:end_idx]
+    except ValueError:
+        return text
+
+
 class LLMRouter:
     """
     Unified LLM router. OpenRouter for testing costs across models.
@@ -67,45 +91,115 @@ class LLMRouter:
 
     Usage:
         router = LLMRouter(LLMConfig(provider="openrouter"))
-        result = await router.complete(
+        result, usage = await router.complete(
             tier="smart",
             system_prompt=COMPLIANCE_AGENT_PROMPT,
             user_message="Check this PO for policy violations...",
-            response_format=ComplianceResult,  # Pydantic model
+            response_model=ComplianceResult,
         )
     """
 
     def __init__(self, config: LLMConfig):
         self.config = config
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Reuse a persistent HTTP client for connection pooling."""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=float(self.config.timeout))
+        return self._client
+
+    async def close(self):
+        """Close the HTTP client."""
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
 
     async def complete(
         self,
-        tier: ModelTier,
+        tier: str,
         system_prompt: str,
         user_message: str,
-        response_format: Optional[type] = None,
+        response_model: Optional[type] = None,
         temperature: float = 0.1,
         max_tokens: int = 4096,
-    ) -> dict:
-        """Route an LLM call to the appropriate provider and model tier."""
-        model = self.config.tier_models[tier][self.config.provider]
+        agent_name: str = "unknown",
+    ) -> tuple[Union[BaseModel, dict, str], dict]:
+        """
+        Route an LLM call to the appropriate provider and model tier.
+
+        Returns:
+            Tuple of (result, usage_dict). Result is a Pydantic model instance
+            if response_model provided, else dict or string.
+        """
+        model = self.config.tier_models[tier][self.config.provider.value]
+        start = time.time()
 
         if self.config.provider == LLMProvider.OPENROUTER:
-            return await self._openrouter_call(
+            result, usage = await self._openrouter_call(
                 model, system_prompt, user_message,
-                response_format, temperature, max_tokens,
+                response_model, temperature, max_tokens,
             )
         else:
-            return await self._bedrock_call(
+            result, usage = await self._bedrock_call(
                 model, system_prompt, user_message,
-                response_format, temperature, max_tokens,
+                response_model, temperature, max_tokens,
             )
+
+        latency_ms = (time.time() - start) * 1000
+
+        # Record cost
+        cost_tracker = get_cost_tracker()
+        cost_tracker.record(LLMCallRecord(
+            agent_name=agent_name,
+            model=model,
+            tier=tier,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            cost_usd=usage.get("total_cost", 0.0),
+            latency_ms=latency_ms,
+        ))
+
+        logger.info(
+            f"[{agent_name}] model={model} "
+            f"tokens={usage.get('prompt_tokens', 0)}+{usage.get('completion_tokens', 0)} "
+            f"cost=${usage.get('total_cost', 0):.4f} latency={latency_ms:.0f}ms"
+        )
+
+        return result, usage
 
     async def _openrouter_call(
         self, model: str, system: str, user: str,
-        response_format: Optional[type], temp: float, max_tokens: int,
-    ):
+        response_model: Optional[type], temp: float, max_tokens: int,
+    ) -> tuple[Union[BaseModel, dict, str], dict]:
         """OpenRouter — OpenAI-compatible API, 400+ models, no markup on pricing."""
+        client = await self._get_client()
+
+        # Build structured output instruction
+        json_instruction = ""
+        if response_model:
+            schema = response_model.model_json_schema()
+            json_instruction = (
+                f"\n\nYou MUST respond with ONLY valid JSON matching this schema. "
+                f"No markdown, no explanation, just the JSON object.\n"
+                f"Schema:\n{json.dumps(schema, indent=2)}"
+            )
+
+        messages = [
+            {"role": "system", "content": system + json_instruction},
+            {"role": "user", "content": user},
+        ]
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temp,
+            "max_tokens": max_tokens,
+            "provider": {
+                "allow_fallbacks": True,
+                "require_parameters": False,
+            },
+        }
+
         headers = {
             "Authorization": f"Bearer {self.config.openrouter_api_key}",
             "Content-Type": "application/json",
@@ -113,86 +207,106 @@ class LLMRouter:
             "X-Title": "Talos AI Procurement",
         }
 
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": temp,
-            "max_tokens": max_tokens,
-            "provider": {
-                "order": ["DeepInfra", "Together", "Fireworks", "Lambda"],
-                "allow_fallbacks": True,
-                "require_parameters": True,
-            },
-        }
+        resp = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=payload,
+        )
 
-        if response_format:
-            payload["response_format"] = {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": response_format.__name__,
-                    "schema": response_format.model_json_schema(),
-                    "strict": True,
-                },
-            }
+        if resp.status_code != 200:
+            logger.error(f"OpenRouter error {resp.status_code}: {resp.text[:500]}")
+            raise Exception(f"OpenRouter API error: {resp.status_code} — {resp.text[:200]}")
 
-        async with httpx.AsyncClient(timeout=self.config.timeout) as client:
-            resp = await client.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers=headers,
-                json=payload,
+        data = resp.json()
+        usage = data.get("usage", {})
+
+        # Extract cost — OpenRouter includes it in usage or we estimate
+        total_cost = usage.get("total_cost", 0.0)
+        if not total_cost:
+            total_cost = (
+                usage.get("prompt_tokens", 0) * 0.000003
+                + usage.get("completion_tokens", 0) * 0.000015
             )
-            data = resp.json()
+        usage["total_cost"] = total_cost
 
-            usage = data.get("usage", {})
-            logger.info(
-                "LLM call completed",
-                extra={
-                    "model": model,
-                    "tokens_in": usage.get("prompt_tokens", 0),
-                    "tokens_out": usage.get("completion_tokens", 0),
-                    "cost": data.get("usage", {}).get("total_cost", "N/A"),
-                },
-            )
+        content = data["choices"][0]["message"]["content"]
 
-            content = data["choices"][0]["message"]["content"]
+        if response_model:
+            cleaned = _strip_markdown_fences(content)
+            try:
+                return response_model.model_validate_json(cleaned), usage
+            except Exception as e:
+                logger.warning(f"JSON parse failed for {response_model.__name__}: {e}")
+                logger.warning(f"Raw content: {cleaned[:500]}")
+                try:
+                    json_str = _extract_json(cleaned)
+                    return response_model.model_validate_json(json_str), usage
+                except Exception:
+                    logger.error(
+                        f"Could not parse response into {response_model.__name__}, returning default"
+                    )
+                    return response_model(), usage
 
-            if response_format:
-                return response_format.model_validate_json(content)
-            return {"content": content}
+        return content, usage
 
     async def _bedrock_call(
         self, model: str, system: str, user: str,
-        response_format: Optional[type], temp: float, max_tokens: int,
-    ):
+        response_model: Optional[type], temp: float, max_tokens: int,
+    ) -> tuple[Union[BaseModel, dict, str], dict]:
         """AWS Bedrock — production deployment, HIPAA eligible, VPC."""
-        import boto3
+        try:
+            import boto3
+        except ImportError:
+            raise ImportError("boto3 required for Bedrock. Run: pip install boto3")
 
-        client = boto3.client("bedrock-runtime", region_name=self.config.aws_region)
+        json_instruction = ""
+        if response_model:
+            schema = response_model.model_json_schema()
+            json_instruction = (
+                f"\n\nRespond with ONLY valid JSON matching this schema:\n"
+                f"{json.dumps(schema, indent=2)}"
+            )
 
-        body = {
+        bedrock_client = boto3.client("bedrock-runtime", region_name=self.config.aws_region)
+
+        body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
-            "system": system,
+            "system": system + json_instruction,
             "messages": [{"role": "user", "content": user}],
             "temperature": temp,
             "max_tokens": max_tokens,
-        }
+        })
 
-        response = client.invoke_model(
+        response = bedrock_client.invoke_model(
             modelId=model,
             contentType="application/json",
             accept="application/json",
-            body=json.dumps(body),
+            body=body,
         )
 
         result = json.loads(response["body"].read())
         content = result["content"][0]["text"]
 
-        if response_format:
-            return response_format.model_validate_json(content)
-        return {"content": content}
+        usage = result.get("usage", {})
+        usage["prompt_tokens"] = usage.get("input_tokens", 0)
+        usage["completion_tokens"] = usage.get("output_tokens", 0)
+        usage["total_cost"] = (
+            usage.get("input_tokens", 0) * 0.000003
+            + usage.get("output_tokens", 0) * 0.000015
+        )
+
+        if response_model:
+            cleaned = _strip_markdown_fences(content)
+            try:
+                return response_model.model_validate_json(cleaned), usage
+            except Exception:
+                try:
+                    json_str = _extract_json(cleaned)
+                    return response_model.model_validate_json(json_str), usage
+                except Exception:
+                    return response_model(), usage
+
+        return content, usage
 
 
 async def test_agent_costs(
@@ -223,35 +337,28 @@ async def test_agent_costs(
     print(f"COST TEST: {agent_name}")
     print(f"{'=' * 60}")
 
+    router = LLMRouter(config)
     for model_id, model_name in test_models:
         try:
-            headers = {
-                "Authorization": f"Bearer {config.openrouter_api_key}",
-                "Content-Type": "application/json",
-            }
+            old_model = config.tier_models["cheap"]["openrouter"]
+            config.tier_models["cheap"]["openrouter"] = model_id
+
             for msg in test_messages:
-                payload = {
-                    "model": model_id,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": msg},
-                    ],
-                    "temperature": 0.1,
-                    "max_tokens": 2048,
-                }
-                async with httpx.AsyncClient(timeout=120) as client:
-                    resp = await client.post(
-                        "https://openrouter.ai/api/v1/chat/completions",
-                        headers=headers,
-                        json=payload,
-                    )
-                    data = resp.json()
-                    usage = data.get("usage", {})
-                    cost = usage.get("total_cost", "N/A")
-                    print(
-                        f"  {model_name:30s} | ${cost:>8} | "
-                        f"in={usage.get('prompt_tokens', 0):>6} "
-                        f"out={usage.get('completion_tokens', 0):>6}"
-                    )
+                result, usage = await router.complete(
+                    tier="cheap",
+                    system_prompt=system_prompt,
+                    user_message=msg,
+                    agent_name=f"benchmark_{agent_name}",
+                )
+                cost = usage.get("total_cost", "N/A")
+                print(
+                    f"  {model_name:30s} | ${cost:>8} | "
+                    f"in={usage.get('prompt_tokens', 0):>6} "
+                    f"out={usage.get('completion_tokens', 0):>6}"
+                )
+
+            config.tier_models["cheap"]["openrouter"] = old_model
         except Exception as e:
             print(f"  {model_name:30s} | ERROR: {e}")
+
+    await router.close()

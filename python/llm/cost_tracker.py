@@ -26,6 +26,7 @@ class LLMCallRecord:
     timestamp: datetime = field(default_factory=datetime.utcnow)
     workflow_id: Optional[str] = None
     requisition_id: Optional[str] = None
+    latency_ms: float = 0.0
 
 
 class CostTracker:
@@ -91,6 +92,20 @@ class CostTracker:
                 else 0
             ),
         }
+
+    def print_summary(self):
+        """Print a formatted cost summary to stdout."""
+        s = self.get_summary()
+        print(f"\n{'='*60}")
+        print(f"LLM COST SUMMARY — {s['total_calls']} calls, ${s['total_cost_usd']:.4f} total")
+        print(f"{'='*60}")
+        for agent, cost in s.get("by_agent", {}).items():
+            agent_records = [r for r in self._records if r.agent_name == agent]
+            calls = len(agent_records)
+            avg_latency = (
+                sum(r.latency_ms for r in agent_records) / calls if calls else 0
+            )
+            print(f"  {agent:30s} | {calls:3d} calls | ${cost:.4f} | {avg_latency:.0f}ms avg")
 
 
 # Global singleton for the application
