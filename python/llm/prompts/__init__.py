@@ -1,0 +1,54 @@
+"""
+Talos AI — Agent Prompt Registry
+Imports all agent system prompts and configurations for agents 01 through 23.
+"""
+
+from .agent_01_intake import AGENT_01_SYSTEM_PROMPT, AGENT_01_CONFIG
+from .agent_02_compliance import AGENT_02_SYSTEM_PROMPT, AGENT_02_CONFIG
+from .agent_03_aggregation import AGENT_03_SYSTEM_PROMPT, AGENT_03_CONFIG
+from .agent_04_market_intel import AGENT_04_SYSTEM_PROMPT, AGENT_04_CONFIG
+from .agent_05_sourcing import AGENT_05_SYSTEM_PROMPT, AGENT_05_CONFIG
+from .agent_06_negotiation import AGENT_06_SYSTEM_PROMPT, AGENT_06_CONFIG
+from .agent_07_vendor_onboarding import AGENT_07_SYSTEM_PROMPT, AGENT_07_CONFIG
+from .agent_08_contract_lifecycle import AGENT_08_SYSTEM_PROMPT, AGENT_08_CONFIG
+from .agent_09_approval import AGENT_09_SYSTEM_PROMPT, AGENT_09_CONFIG
+from .agent_10_purchase_order import AGENT_10_SYSTEM_PROMPT, AGENT_10_CONFIG
+from .agent_11_order_confirmation import AGENT_11_SYSTEM_PROMPT, AGENT_11_CONFIG
+from .agent_12_invoice_matching import AGENT_12_SYSTEM_PROMPT, AGENT_12_CONFIG
+from .agent_13_payment_optimization import AGENT_13_SYSTEM_PROMPT, AGENT_13_CONFIG
+from .agent_14_goods_receipt import AGENT_14_SYSTEM_PROMPT, AGENT_14_CONFIG
+from .agent_15_budget_guardian import AGENT_15_SYSTEM_PROMPT, AGENT_15_CONFIG
+from .agent_16_spend_analytics import AGENT_16_SYSTEM_PROMPT, AGENT_16_CONFIG
+from .agent_17_savings_verification import AGENT_17_SYSTEM_PROMPT, AGENT_17_CONFIG
+from .agent_18_risk_compliance import AGENT_18_SYSTEM_PROMPT, AGENT_18_CONFIG
+from .agent_19_category_strategy import AGENT_19_SYSTEM_PROMPT, AGENT_19_CONFIG
+from .agent_20_supplier_performance import AGENT_20_SYSTEM_PROMPT, AGENT_20_CONFIG
+from .agent_21_knowledge_base import AGENT_21_SYSTEM_PROMPT, AGENT_21_CONFIG
+from .agent_22_proactive_optimization import AGENT_22_SYSTEM_PROMPT, AGENT_22_CONFIG
+from .agent_23_price_tracking import AGENT_23_SYSTEM_PROMPT, AGENT_23_CONFIG
+
+__all__ = [
+    "AGENT_01_SYSTEM_PROMPT", "AGENT_01_CONFIG",
+    "AGENT_02_SYSTEM_PROMPT", "AGENT_02_CONFIG",
+    "AGENT_03_SYSTEM_PROMPT", "AGENT_03_CONFIG",
+    "AGENT_04_SYSTEM_PROMPT", "AGENT_04_CONFIG",
+    "AGENT_05_SYSTEM_PROMPT", "AGENT_05_CONFIG",
+    "AGENT_06_SYSTEM_PROMPT", "AGENT_06_CONFIG",
+    "AGENT_07_SYSTEM_PROMPT", "AGENT_07_CONFIG",
+    "AGENT_08_SYSTEM_PROMPT", "AGENT_08_CONFIG",
+    "AGENT_09_SYSTEM_PROMPT", "AGENT_09_CONFIG",
+    "AGENT_10_SYSTEM_PROMPT", "AGENT_10_CONFIG",
+    "AGENT_11_SYSTEM_PROMPT", "AGENT_11_CONFIG",
+    "AGENT_12_SYSTEM_PROMPT", "AGENT_12_CONFIG",
+    "AGENT_13_SYSTEM_PROMPT", "AGENT_13_CONFIG",
+    "AGENT_14_SYSTEM_PROMPT", "AGENT_14_CONFIG",
+    "AGENT_15_SYSTEM_PROMPT", "AGENT_15_CONFIG",
+    "AGENT_16_SYSTEM_PROMPT", "AGENT_16_CONFIG",
+    "AGENT_17_SYSTEM_PROMPT", "AGENT_17_CONFIG",
+    "AGENT_18_SYSTEM_PROMPT", "AGENT_18_CONFIG",
+    "AGENT_19_SYSTEM_PROMPT", "AGENT_19_CONFIG",
+    "AGENT_20_SYSTEM_PROMPT", "AGENT_20_CONFIG",
+    "AGENT_21_SYSTEM_PROMPT", "AGENT_21_CONFIG",
+    "AGENT_22_SYSTEM_PROMPT", "AGENT_22_CONFIG",
+    "AGENT_23_SYSTEM_PROMPT", "AGENT_23_CONFIG",
+]

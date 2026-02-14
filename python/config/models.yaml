@@ -1,0 +1,76 @@
+# Talos AI — LLM Model Configuration
+# Maps agent tiers to specific models for each provider
+
+# Model tier definitions
+# CHEAP: Simple extraction, routing, classification ($0.10-0.30/M tokens)
+# SMART: Analysis, compliance, matching ($3-5/M tokens)
+# GENIUS: Negotiation, strategy, complex reasoning ($15-60/M tokens)
+
+tiers:
+  cheap:
+    openrouter: deepseek/deepseek-chat-v3-0324:floor
+    bedrock: amazon.nova-micro-v1:0
+    description: Simple extraction, routing, classification
+    cost_range: "$0.10-0.30/M tokens"
+
+  smart:
+    openrouter: anthropic/claude-sonnet-4
+    bedrock: anthropic.claude-sonnet-4-20250514-v1:0
+    description: Analysis, compliance, matching
+    cost_range: "$3-5/M tokens"
+
+  genius:
+    openrouter: anthropic/claude-opus-4
+    bedrock: anthropic.claude-opus-4-20250514-v1:0
+    description: Negotiation, strategy, complex reasoning
+    cost_range: "$15-60/M tokens"
+
+# Agent-to-tier mapping
+agents:
+  agent_01_intake_parser: cheap
+  agent_02_policy_compliance: smart
+  agent_03_demand_aggregation: cheap
+  agent_04_market_intelligence: smart
+  agent_05_sourcing: smart
+  agent_06_negotiation: genius
+  agent_07_vendor_onboarding: smart
+  agent_08_contract_lifecycle: smart
+  agent_09_approval_workflow: cheap
+  agent_10_purchase_order: cheap
+  agent_11_order_confirmation: cheap
+  agent_12_invoice_matching: smart
+  agent_13_payment_optimization: smart
+  agent_14_goods_receipt: cheap
+  agent_15_budget_guardian: smart
+  agent_16_spend_analytics: smart
+  agent_17_savings_verification: genius
+  agent_18_risk_compliance: smart
+  agent_19_category_strategy: smart
+  agent_20_supplier_performance: smart
+  agent_21_knowledge_base: smart
+  agent_22_proactive_optimization: genius
+  agent_23_price_tracking: smart
+
+# OpenRouter provider routing preferences (cheapest first)
+openrouter_provider_order:
+  - DeepInfra
+  - Together
+  - Fireworks
+  - Lambda
+
+# Alternative models for cost testing
+cost_test_models:
+  - id: deepseek/deepseek-chat-v3-0324:floor
+    name: DeepSeek V3 (cheapest)
+  - id: meta-llama/llama-3.3-70b-instruct:floor
+    name: Llama 3.3 70B
+  - id: mistralai/mistral-large-2411:floor
+    name: Mistral Large
+  - id: anthropic/claude-sonnet-4:floor
+    name: Claude Sonnet 4
+  - id: anthropic/claude-opus-4:floor
+    name: Claude Opus 4
+  - id: amazon.nova-pro-v1:0
+    name: Amazon Nova Pro
+  - id: amazon.nova-micro-v1:0
+    name: Amazon Nova Micro
