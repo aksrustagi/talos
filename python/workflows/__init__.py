@@ -7,9 +7,16 @@ from .procurement_workflows import (
     ContractRenewalWorkflow,
 )
 
+from .requisition import (
+    RequisitionToOrderWorkflow,
+    RequisitionInput,
+)
+
 __all__ = [
     "RequisitionApprovalWorkflow",
     "InvoiceValidationWorkflow",
     "CatalogSyncWorkflow",
     "ContractRenewalWorkflow",
+    "RequisitionToOrderWorkflow",
+    "RequisitionInput",
 ]

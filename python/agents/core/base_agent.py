@@ -4,6 +4,7 @@ Base Agent Framework
 Provides the foundational class for all procurement AI agents using LangGraph.
 """
 
+import time
 from typing import TypedDict, Annotated, Sequence, Literal, Optional, Callable, Any
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
@@ -14,6 +15,8 @@ from langgraph.prebuilt import ToolExecutor, ToolInvocation
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
+
+from audit.audit_log import get_audit_logger
 
 
 # ============================================
@@ -256,6 +259,8 @@ class ProcurementAgent(ABC):
         Returns:
             Dict with response and any actions taken
         """
+        start_time = time.monotonic()
+
         # Initialize state
         initial_state: AgentState = {
             "messages": [HumanMessage(content=message)],
@@ -271,21 +276,87 @@ class ProcurementAgent(ABC):
         # Run the graph
         final_state = await self.graph.ainvoke(initial_state)
 
+        duration_ms = int((time.monotonic() - start_time) * 1000)
+
         # Extract response
         last_message = final_state["messages"][-1]
         response_text = last_message.content if hasattr(last_message, "content") else str(last_message)
 
-        return {
+        tool_calls = [
+            tc for msg in final_state["messages"]
+            if hasattr(msg, "tool_calls")
+            for tc in msg.tool_calls
+        ]
+
+        result = {
             "response": response_text,
             "agent_id": self.config.agent_id,
-            "tool_calls": [
-                tc for msg in final_state["messages"]
-                if hasattr(msg, "tool_calls")
-                for tc in msg.tool_calls
-            ],
+            "tool_calls": tool_calls,
             "tool_results": final_state.get("tool_results", []),
             "pending_approval": final_state.get("pending_approval"),
         }
+
+        # ---- Audit logging ----
+        # Extract procurement IDs from context for linking
+        ctx = context or {}
+        requisition_id = ctx.get("requisition_id")
+        po_id = ctx.get("po_id")
+        contract_id = ctx.get("contract_id")
+        triggered_by = ctx.get("triggered_by", "user")
+        workflow_run_id = ctx.get("workflow_run_id")
+        workflow_step = ctx.get("workflow_step")
+        parent_audit_id = ctx.get("parent_audit_id")
+
+        # Derive decision info from tool calls
+        decision_made = None
+        decision_reasoning = None
+        if tool_calls:
+            actions = [tc.get("name", "unknown") for tc in tool_calls]
+            decision_made = f"Invoked tools: {', '.join(actions)}"
+        if final_state.get("pending_approval"):
+            decision_made = "Flagged for human approval"
+            decision_reasoning = (
+                f"Amount exceeds threshold of ${self.config.human_in_loop_threshold:,.2f}"
+            )
+
+        try:
+            audit_logger = get_audit_logger()
+            serializable_tool_calls = []
+            for tc in tool_calls:
+                serializable_tool_calls.append({
+                    "name": tc.get("name"),
+                    "args": tc.get("args"),
+                    "id": tc.get("id"),
+                })
+
+            audit_entry_id = audit_logger.log_agent_call(
+                agent_name=self.config.name,
+                agent_id=self.config.agent_id,
+                input_message=message,
+                input_context=ctx,
+                output_response=response_text,
+                output_tool_calls=serializable_tool_calls if serializable_tool_calls else None,
+                model_used=self.config.model,
+                triggered_by=triggered_by,
+                decision_made=decision_made,
+                decision_reasoning=decision_reasoning,
+                requisition_id=requisition_id,
+                po_id=po_id,
+                contract_id=contract_id,
+                user_id=user_id,
+                user_email=ctx.get("user_email"),
+                university_id=university_id,
+                workflow_run_id=workflow_run_id,
+                workflow_step=workflow_step,
+                parent_audit_id=parent_audit_id,
+                duration_ms=duration_ms,
+            )
+            result["audit_entry_id"] = audit_entry_id
+        except Exception:
+            # Audit logging must not break the agent pipeline
+            pass
+
+        return result
 
 
 # ============================================
