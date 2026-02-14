@@ -1,0 +1,89 @@
+# Talos AI — Northwell Health Client Configuration
+# Policies, thresholds, and connector settings for healthcare
+
+client_type: northwell
+name: Northwell Health
+
+# Approval thresholds
+approval_thresholds:
+  - max_amount: 5000
+    approvers: []  # Auto-approve if on GPO contract
+    auto_approve_conditions:
+      - on_gpo_contract
+  - max_amount: 25000
+    approvers:
+      - role: department_manager
+  - max_amount: 100000
+    approvers:
+      - role: department_manager
+      - role: service_line_vp
+  - max_amount: 500000
+    approvers:
+      - role: service_line_vp
+      - role: vp_supply_chain
+      - role: cfo
+  - max_amount: 2000000
+    approvers:
+      - role: c_suite_committee
+  - max_amount: null
+    approvers:
+      - role: board
+
+# Competitive bidding thresholds
+competitive_bid_threshold: 250000
+
+# GPO Configuration
+gpo:
+  primary: vizient
+  secondary: premier
+  340b_eligible: true
+  committed_volume_tracking: true
+
+# Regulatory requirements
+regulatory:
+  - fda_510k  # Class II/III devices
+  - 340b_drug_pricing
+  - gpo_compliance
+  - joint_commission
+  - cms_conditions_of_participation
+  - hipaa_baa  # Business Associate Agreements
+  - infection_control
+
+# Healthcare-specific tracking
+tracking:
+  serial_numbers: true  # Class II/III devices
+  lot_numbers: true
+  expiration_dates: true
+  temperature_sensitive: true
+  controlled_substances: true
+
+# Invoice matching tolerances
+invoice_tolerances:
+  price_variance_percent: 3
+  price_variance_absolute: 25
+  quantity_variance_percent: 5
+  quantity_variance_absolute: 1
+  pharma_tolerance: 0  # Exact match, 340B verification
+  device_serial_tracking: true  # Class II/III
+
+# Connector configuration
+connectors:
+  primary: gep_smart
+  erp: oracle_fusion
+  clinical: epic
+  gpo_portals:
+    - vizient
+    - premier
+  distributors:
+    - mckesson
+    - cardinal_health
+    - medline
+  drug_pricing:
+    - medi_span
+    - first_databank
+
+# Model tier assignments
+model_tiers:
+  cheap: deepseek/deepseek-chat-v3-0324:floor
+  smart: anthropic/claude-sonnet-4
+  genius: anthropic/claude-opus-4

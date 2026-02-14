@@ -1,0 +1,80 @@
+# Talos AI — NYPA Client Configuration
+# Policies, thresholds, and connector settings for NY Power Authority
+
+client_type: nypa
+name: New York Power Authority
+
+# Approval thresholds
+approval_thresholds:
+  - max_amount: 25000
+    approvers:
+      - role: manager
+  - max_amount: 100000
+    approvers:
+      - role: manager
+      - role: director
+  - max_amount: 500000
+    approvers:
+      - role: director
+      - role: vp
+      - role: procurement_director
+  - max_amount: 2000000
+    approvers:
+      - role: evp
+      - role: cfo
+  - max_amount: null
+    approvers:
+      - role: board_of_trustees
+
+# Competitive bidding thresholds
+competitive_bid_threshold: 250000
+informal_quote_threshold: 50000
+
+# Regulatory requirements
+regulatory:
+  - nys_finance_law_163
+  - public_authority_accountability_act
+  - mwbe_30_percent
+  - wicks_law  # Construction >$50K
+  - davis_bacon  # Federally funded construction
+  - nerc_cip  # Cybersecurity for bulk electric system
+  - environmental_review
+
+# MWBE goals
+mwbe:
+  overall_goal_percent: 30
+  mbe_goal_percent: 15
+  wbe_goal_percent: 15
+  sdvob_goal_percent: 6
+
+# Category classifications
+categories:
+  - generation_equipment
+  - transmission_equipment
+  - facilities
+  - fleet
+  - IT
+  - professional_services
+
+# Invoice matching tolerances
+invoice_tolerances:
+  price_variance_percent: 2
+  price_variance_absolute: 100
+  quantity_variance_percent: 5
+  capital_tolerance: 0  # Exact match required
+  service_match: milestone  # Must match deliverable schedule
+
+# Connector configuration
+connectors:
+  primary: sap_ariba
+  erp: oracle_fusion
+  catalog_sources:
+    - thomasnet
+    - grainger
+    - gsa_advantage
+
+# Model tier assignments
+model_tiers:
+  cheap: deepseek/deepseek-chat-v3-0324:floor
+  smart: anthropic/claude-sonnet-4
+  genius: anthropic/claude-opus-4

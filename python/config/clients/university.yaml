@@ -1,0 +1,100 @@
+# Talos AI — University Client Configuration
+# Policies, thresholds, and connector settings for higher education
+
+client_type: university
+name: ""  # Set per deployment
+
+# Approval thresholds
+approval_thresholds:
+  - max_amount: 10000
+    approvers: []  # Auto-approve if on contract and within budget
+    auto_approve_conditions:
+      - on_contract
+      - within_budget
+  - max_amount: 50000
+    approvers:
+      - role: department_head
+  - max_amount: 100000
+    approvers:
+      - role: department_head
+      - role: dean_or_vp
+  - max_amount: 500000
+    approvers:
+      - role: department_head
+      - role: dean_or_vp
+      - role: vp_finance
+      - role: provost
+  - max_amount: 1000000
+    approvers:
+      - role: cfo
+  - max_amount: null  # unlimited
+    approvers:
+      - role: board_of_trustees
+
+# Competitive bidding thresholds
+competitive_bid_threshold: 250000
+informal_quote_threshold: 50000
+
+# Preferred vendors (cooperative contracts)
+preferred_vendors:
+  office_supplies:
+    - name: Staples
+      contract_type: cooperative
+      cooperative: E&I
+  lab_supplies:
+    - name: Fisher Scientific
+      contract_type: cooperative
+      cooperative: E&I
+    - name: VWR/Avantor
+      contract_type: cooperative
+      cooperative: E&I
+  it_equipment:
+    - name: Dell
+      contract_type: institutional
+    - name: Apple
+      contract_type: institutional
+    - name: CDW-G
+      contract_type: institutional
+  furniture:
+    - name: Steelcase
+      contract_type: institutional
+
+# Federal grant rules (2 CFR 200)
+grant_rules:
+  capital_threshold: 5000
+  require_sam_registration: true
+  travel_per_diem: federal
+  alcohol_allowed: false
+  foreign_travel_prior_approval: true
+  equipment_prior_approval_threshold: 5000
+
+# Regulatory requirements
+regulatory:
+  - export_controls  # ITAR/EAR
+  - 2_CFR_200       # Federal grants
+  - FERPA            # Student data
+  - tax_exempt       # Sales tax exemption
+
+# Invoice matching tolerances
+invoice_tolerances:
+  price_variance_percent: 5
+  price_variance_absolute: 50
+  quantity_variance_percent: 10
+  quantity_variance_absolute: 2
+  tax_expected: 0  # Tax-exempt
+  freight_variance: 25
+
+# Connector configuration
+connectors:
+  primary: jaggaer
+  erp: peoplesoft
+  catalog_sources:
+    - e_and_i_cooperative
+    - gsa_advantage
+    - amazon_business
+
+# Model tier assignments
+model_tiers:
+  cheap: deepseek/deepseek-chat-v3-0324:floor
+  smart: anthropic/claude-sonnet-4
+  genius: anthropic/claude-opus-4
