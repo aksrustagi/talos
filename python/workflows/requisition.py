@@ -15,6 +15,7 @@ Flow:
   6. Generate Purchase Order — finalize and transmit PO
 """
 
+import asyncio
 import uuid
 from dataclasses import dataclass
 from datetime import timedelta
@@ -90,6 +91,15 @@ class RequisitionToOrderWorkflow:
         comments: Optional[str] = None,
     ):
         """Signal sent when a human approves or rejects the requisition."""
+        # Guard: ignore duplicate signals after a decision is already made
+        if self.approval_decision is not None:
+            return
+
+        # Validate decision value
+        if decision not in ("approve", "reject"):
+            # Invalid decisions are ignored — only "approve" and "reject" are valid
+            return
+
         self.approval_decision = decision
         self.approver_id = approver_id
         self.approval_comments = comments
@@ -282,29 +292,49 @@ class RequisitionToOrderWorkflow:
         )
 
         # ======================================
-        # Step 7: Generate PO
+        # Steps 7-8: Generate PO & Send to Vendor
+        # Wrapped in compensation — if these fail after
+        # approval, we return partial_failure instead of
+        # letting the workflow crash with an unhandled error.
         # ======================================
-        self.current_step = "generating_po"
+        try:
+            self.current_step = "generating_po"
 
-        po_number = await workflow.execute_activity(
-            generate_purchase_order,
-            args=[self.requisition_id],
-            start_to_close_timeout=timedelta(minutes=2),
-            retry_policy=AGENT_RETRY,
-        )
+            po_number = await workflow.execute_activity(
+                generate_purchase_order,
+                args=[self.requisition_id],
+                start_to_close_timeout=timedelta(minutes=2),
+                retry_policy=AGENT_RETRY,
+            )
 
-        # ======================================
-        # Step 8: Send PO to Vendor
-        # ======================================
-        self.current_step = "sending_po"
+            self.current_step = "sending_po"
 
-        vendor_id = "vendor_from_selection"  # Would be extracted from vendor_result
-        sent = await workflow.execute_activity(
-            send_po_to_vendor,
-            args=[po_number, vendor_id],
-            start_to_close_timeout=timedelta(minutes=1),
-            retry_policy=RetryPolicy(maximum_attempts=5),
-        )
+            # Extract vendor ID from the vendor selection result
+            vendor_id = _extract_vendor_id(vendor_result)
+
+            sent = await workflow.execute_activity(
+                send_po_to_vendor,
+                args=[po_number, vendor_id],
+                start_to_close_timeout=timedelta(minutes=1),
+                retry_policy=RetryPolicy(maximum_attempts=5),
+            )
+        except Exception as po_error:
+            self.current_step = "partial_failure"
+            return {
+                "status": "partial_failure",
+                "requisition_id": self.requisition_id,
+                "approved_by": self.approver_id,
+                "total": total,
+                "error": str(po_error),
+                "failed_at": self.current_step,
+                "message": "Requisition approved but PO generation/transmission failed. Needs manual intervention.",
+                "steps": {
+                    "requisition": requisition_result.get("response", ""),
+                    "vendor_selection": vendor_result.get("response", ""),
+                    "price_comparison": price_result.get("response", ""),
+                    "approval": approval_result.get("response", ""),
+                },
+            }
 
         self.current_step = "complete"
 
@@ -315,6 +345,7 @@ class RequisitionToOrderWorkflow:
             "sent_to_vendor": sent,
             "approved_by": self.approver_id,
             "total": total,
+            "vendor_id": vendor_id,
             "steps": {
                 "requisition": requisition_result.get("response", ""),
                 "vendor_selection": vendor_result.get("response", ""),
@@ -322,3 +353,31 @@ class RequisitionToOrderWorkflow:
                 "approval": approval_result.get("response", ""),
             },
         }
+
+
+def _extract_vendor_id(vendor_result: dict) -> str:
+    """Extract vendor ID from vendor selection agent result.
+
+    Tries several known response structures. Falls back to a
+    placeholder if the agent didn't return a structured vendor ID.
+    """
+    # Check if the agent returned structured data with a vendor ID
+    response = vendor_result.get("response", "")
+
+    # Check tool_calls for vendor IDs from structured tool output
+    for tc in vendor_result.get("tool_calls", []):
+        args = tc.get("args", {})
+        if "vendor_id" in args:
+            return args["vendor_id"]
+
+    # Check if the result has a top-level vendor_id (from tool_results)
+    if "vendor_id" in vendor_result:
+        return vendor_result["vendor_id"]
+
+    # Check tool_results for vendor_id
+    for tr in vendor_result.get("tool_results", []):
+        if isinstance(tr, dict) and "vendor_id" in tr:
+            return tr["vendor_id"]
+
+    # Fallback — the agent returned unstructured text without a parseable ID
+    return "pending_vendor_assignment"

@@ -654,7 +654,7 @@ async def start_requisition_workflow(
         )
 
         import uuid
-        workflow_id = f"req-{uuid.uuid4().hex[:12]}"
+        workflow_id = f"req-{uuid.uuid4()}"
 
         handle = await temporal_client.start_workflow(
             RequisitionToOrderWorkflow.run,

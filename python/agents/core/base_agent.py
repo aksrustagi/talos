@@ -10,13 +10,16 @@ from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
 import operator
 
-from langgraph.graph import Graph, StateGraph, END
-from langgraph.prebuilt import ToolExecutor, ToolInvocation
+from langgraph.graph import StateGraph, END
+from langgraph.graph.state import CompiledStateGraph
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
 from langchain_core.tools import BaseTool
+import structlog
 
 from audit.audit_log import get_audit_logger
+
+_audit_log = structlog.get_logger("audit")
 
 
 # ============================================
@@ -87,13 +90,13 @@ class ProcurementAgent(ABC):
         else:
             self.llm_with_tools = self.llm
 
-        # Tool executor
-        self.tool_executor = ToolExecutor(tools) if tools else None
+        # Tool map for execution
+        self.tool_map = {t.name: t for t in tools} if tools else {}
 
         # Build the graph
         self.graph = self._build_graph()
 
-    def _build_graph(self) -> Graph:
+    def _build_graph(self) -> CompiledStateGraph:
         """Build the LangGraph execution graph."""
         workflow = StateGraph(AgentState)
 
@@ -158,16 +161,13 @@ class ProcurementAgent(ABC):
 
         results = []
         for tool_call in last_message.tool_calls:
-            # Create tool invocation
-            invocation = ToolInvocation(
-                tool=tool_call["name"],
-                tool_input=tool_call["args"],
-            )
+            tool_name = tool_call["name"]
+            tool = self.tool_map.get(tool_name)
+            if tool is None:
+                result = f"Error: unknown tool '{tool_name}'"
+            else:
+                result = await tool.ainvoke(tool_call["args"])
 
-            # Execute tool
-            result = await self.tool_executor.ainvoke(invocation)
-
-            # Create tool message
             tool_message = ToolMessage(
                 content=str(result),
                 tool_call_id=tool_call["id"],
@@ -352,9 +352,14 @@ class ProcurementAgent(ABC):
                 duration_ms=duration_ms,
             )
             result["audit_entry_id"] = audit_entry_id
-        except Exception:
+        except Exception as exc:
             # Audit logging must not break the agent pipeline
-            pass
+            _audit_log.warning(
+                "audit_logging_failed",
+                agent_id=self.config.agent_id,
+                error=str(exc),
+                exc_info=True,
+            )
 
         return result
 

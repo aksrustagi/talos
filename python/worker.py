@@ -23,12 +23,11 @@ from agents import (
     VendorSelectionAgent,
 )
 
-from workflows.requisition import RequisitionToOrderWorkflow
+# Activities from procurement_workflows are imported at module level
+# because requisition.py references them via workflow.execute_activity().
+# Workflow classes are imported lazily in run_worker() to avoid a circular
+# import: workflows/requisition.py -> worker.py -> workflows/requisition.py.
 from workflows.procurement_workflows import (
-    RequisitionApprovalWorkflow,
-    InvoiceValidationWorkflow,
-    CatalogSyncWorkflow,
-    ContractRenewalWorkflow,
     validate_budget,
     determine_approvers,
     send_approval_notification,
@@ -91,7 +90,7 @@ async def run_requisition_agent(
     message: str,
     user_id: str,
     university_id: str,
-    context: Optional[dict] = None,
+    context: dict,
 ) -> dict:
     """Run the Requisition Agent as a Temporal activity."""
     agent = _get_agent("requisition")
@@ -103,7 +102,7 @@ async def run_vendor_selection_agent(
     message: str,
     user_id: str,
     university_id: str,
-    context: Optional[dict] = None,
+    context: dict,
 ) -> dict:
     """Run the Vendor Selection Agent as a Temporal activity."""
     agent = _get_agent("vendor-selection")
@@ -115,7 +114,7 @@ async def run_price_compare_agent(
     message: str,
     user_id: str,
     university_id: str,
-    context: Optional[dict] = None,
+    context: dict,
 ) -> dict:
     """Run the Price Compare Agent as a Temporal activity."""
     agent = _get_agent("price-compare")
@@ -127,7 +126,7 @@ async def run_price_watch_agent(
     message: str,
     user_id: str,
     university_id: str,
-    context: Optional[dict] = None,
+    context: dict,
 ) -> dict:
     """Run the PriceWatch Agent as a Temporal activity."""
     agent = _get_agent("price-watch")
@@ -139,7 +138,7 @@ async def run_historical_price_agent(
     message: str,
     user_id: str,
     university_id: str,
-    context: Optional[dict] = None,
+    context: dict,
 ) -> dict:
     """Run the Historical Price Agent as a Temporal activity."""
     agent = _get_agent("historical-price")
@@ -151,7 +150,7 @@ async def run_approval_workflow_agent(
     message: str,
     user_id: str,
     university_id: str,
-    context: Optional[dict] = None,
+    context: dict,
 ) -> dict:
     """Run the Approval Workflow Agent as a Temporal activity."""
     agent = _get_agent("approval-workflow")
@@ -197,28 +196,38 @@ PROCUREMENT_ACTIVITIES = [
 
 ALL_ACTIVITIES = AGENT_ACTIVITIES + PROCUREMENT_ACTIVITIES
 
-ALL_WORKFLOWS = [
-    RequisitionToOrderWorkflow,
-    RequisitionApprovalWorkflow,
-    InvoiceValidationWorkflow,
-    CatalogSyncWorkflow,
-    ContractRenewalWorkflow,
-]
-
 
 async def run_worker():
     """Connect to Temporal and run the worker."""
+    # Import workflow classes here (not at module level) to avoid a circular
+    # import: workflows/requisition.py → worker → workflows/requisition.py
+    from workflows.requisition import RequisitionToOrderWorkflow
+    from workflows.procurement_workflows import (
+        RequisitionApprovalWorkflow,
+        InvoiceValidationWorkflow,
+        CatalogSyncWorkflow,
+        ContractRenewalWorkflow,
+    )
+
+    all_workflows = [
+        RequisitionToOrderWorkflow,
+        RequisitionApprovalWorkflow,
+        InvoiceValidationWorkflow,
+        CatalogSyncWorkflow,
+        ContractRenewalWorkflow,
+    ]
+
     client = await Client.connect(TEMPORAL_HOST)
 
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
-        workflows=ALL_WORKFLOWS,
+        workflows=all_workflows,
         activities=ALL_ACTIVITIES,
     )
 
     print(f"Temporal worker started on task queue: {TASK_QUEUE}")
-    print(f"  Workflows: {[w.__name__ for w in ALL_WORKFLOWS]}")
+    print(f"  Workflows: {[w.__name__ for w in all_workflows]}")
     print(f"  Activities: {[a.__name__ for a in ALL_ACTIVITIES]}")
 
     await worker.run()

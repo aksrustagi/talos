@@ -1,0 +1,52 @@
+# Local development setup for Temporal + Talos worker
+#
+# Usage:
+#   docker compose up -d          # start Temporal server
+#   docker compose up worker      # start Talos worker (needs deps installed)
+#
+# Temporal UI: http://localhost:8233
+
+services:
+  temporal:
+    image: temporalio/auto-setup:latest
+    ports:
+      - "7233:7233"   # gRPC frontend
+      - "8233:8233"   # Web UI
+    environment:
+      - DB=sqlite
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    volumes:
+      - temporal-data:/var/lib/temporal
+
+  worker:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+      - TEMPORAL_TASK_QUEUE=talos-procurement
+      - TALOS_AUDIT_DB=/app/data/audit.db
+    depends_on:
+      - temporal
+    volumes:
+      - audit-data:/app/data
+
+  api:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    command: ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "8000:8000"
+    environment:
+      - TEMPORAL_HOST=temporal:7233
+      - TEMPORAL_TASK_QUEUE=talos-procurement
+      - TALOS_AUDIT_DB=/app/data/audit.db
+    depends_on:
+      - temporal
+    volumes:
+      - audit-data:/app/data
+
+volumes:
+  temporal-data:
+  audit-data:
