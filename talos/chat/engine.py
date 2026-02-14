@@ -13,7 +13,7 @@ This is the core differentiator vs Coupa/Zip/Procurify's form-heavy UX.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 
 from ..schemas import ChatMessage, ConversationSession
 from ..agents.core import TalosAgents
@@ -23,15 +23,45 @@ from ..config import get_config
 log = logging.getLogger("talos.chat")
 
 
-# Intent categories the chat engine can detect
-INTENTS = {
-    "buy": ["need", "purchase", "order", "buy", "request", "get me", "procure", "acquire"],
-    "price": ["price", "cost", "how much", "quote", "pricing", "compare prices", "cheapest"],
-    "status": ["status", "where is", "track", "update on", "what happened to"],
-    "policy": ["can i", "allowed", "policy", "threshold", "approval", "compliant", "regulation"],
-    "savings": ["savings", "save money", "cheaper", "optimize", "discount", "negotiate"],
-    "help": ["help", "how do i", "what is", "explain", "guide"],
-}
+# Intent categories with priority order (higher index = higher priority for disambiguation)
+# Each intent has keywords and a priority score; when multiple intents match,
+# the one with the highest score wins.
+INTENT_RULES = [
+    {
+        "intent": "help",
+        "keywords": ["help", "how do i", "what is", "explain", "guide", "tutorial"],
+        "priority": 1,
+    },
+    {
+        "intent": "status",
+        "keywords": ["status", "where is", "track", "update on", "what happened to", "my order"],
+        "priority": 2,
+    },
+    {
+        "intent": "policy",
+        "keywords": ["can i", "allowed", "policy", "threshold", "approval needed",
+                      "compliant", "regulation", "rules for"],
+        "priority": 3,
+    },
+    {
+        "intent": "savings",
+        "keywords": ["savings", "save money", "optimize spend", "reduce cost",
+                      "negotiate", "renegotiate", "consolidate spend"],
+        "priority": 4,
+    },
+    {
+        "intent": "price",
+        "keywords": ["price", "cost", "how much", "quote", "pricing", "compare prices",
+                      "cheapest", "what does .* cost"],
+        "priority": 5,
+    },
+    {
+        "intent": "buy",
+        "keywords": ["need", "purchase", "order", "buy", "request", "get me",
+                      "procure", "acquire", "requisition", "i want"],
+        "priority": 6,
+    },
+]
 
 
 class ChatEngine:
@@ -44,10 +74,12 @@ class ChatEngine:
         # Returns: "I'll process that requisition for you. Here's what I found..."
     """
 
-    def __init__(self, client_type: str = "university"):
+    def __init__(self, client_type: str = "university",
+                 agents: TalosAgents | None = None,
+                 pipeline_runner: RequisitionPipelineRunner | None = None):
         self.client_type = client_type
-        self.agents = TalosAgents(client_type)
-        self.pipeline_runner = RequisitionPipelineRunner(client_type)
+        self.agents = agents or TalosAgents(client_type)
+        self.pipeline_runner = pipeline_runner or RequisitionPipelineRunner(client_type)
         self.sessions: dict[str, ConversationSession] = {}
 
     def _get_or_create_session(self, session_id: str | None = None,
@@ -58,13 +90,25 @@ class ChatEngine:
         self.sessions[session.session_id] = session
         return session
 
+    def load_session(self, session: ConversationSession):
+        """Load a session from DB into memory."""
+        self.sessions[session.session_id] = session
+
     def _detect_intent(self, message: str) -> str:
-        """Detect what the user wants to do."""
+        """Detect what the user wants using scored keyword matching.
+        Higher-priority intents win when multiple match.
+        """
         lower = message.lower()
-        for intent, keywords in INTENTS.items():
-            if any(kw in lower for kw in keywords):
-                return intent
-        return "general"
+        best_intent = "general"
+        best_priority = 0
+
+        for rule in INTENT_RULES:
+            if any(kw in lower for kw in rule["keywords"]):
+                if rule["priority"] > best_priority:
+                    best_priority = rule["priority"]
+                    best_intent = rule["intent"]
+
+        return best_intent
 
     async def message(
         self,
@@ -82,6 +126,16 @@ class ChatEngine:
         - "Can I buy a $50K instrument on my NSF grant?" -> triggers policy lookup
         - "What's the status of my glove order?" -> status check
         """
+        config = get_config()
+        if not config.enable_chat:
+            return {
+                "message": "Chat mode is currently disabled. Please use the API endpoints directly.",
+                "session_id": session_id,
+                "intent": "disabled",
+            }
+
+        text = text[:5000]  # Cap input length
+
         session = self._get_or_create_session(session_id, requester, department)
 
         # Record user message
@@ -99,16 +153,14 @@ class ChatEngine:
                 response = await self._handle_policy(session, text)
             elif intent == "savings":
                 response = await self._handle_savings(session, text)
-            elif intent in ("help", "general", "status"):
-                response = await self._handle_knowledge(session, text)
             else:
                 response = await self._handle_knowledge(session, text)
         except Exception as e:
             log.error(f"[{session.session_id}] Error: {e}", exc_info=True)
             response = {
-                "message": f"I ran into an issue processing your request. Let me try a different approach. Error: {str(e)[:100]}",
+                "message": "I ran into an issue processing your request. Please try again or rephrase.",
                 "intent": intent,
-                "error": str(e),
+                "error": str(e)[:200],
             }
 
         # Record assistant response
@@ -204,17 +256,15 @@ class ChatEngine:
         return {"message": answer}
 
     async def _handle_savings(self, session: ConversationSession, text: str) -> dict:
-        """Handle savings/optimization questions."""
-        result = await self.agents.find_optimizations(text)
-        parts = [f"**Optimization found:** {result.description[:200]}"]
-        parts.append(f"\n**Type:** {result.discovery_type}")
-        parts.append(f"**Estimated annual savings:** ${result.estimated_annual_savings:,.2f}")
-        parts.append(f"**Confidence:** {result.confidence:.0%}")
-        parts.append(f"**Recommended action:** {result.recommended_action}")
-        return {
-            "message": "\n".join(parts),
-            "optimization": result.model_dump(),
-        }
+        """Handle savings/optimization questions using knowledge base for general queries."""
+        # Use knowledge base (smart tier) for conversational savings questions
+        # rather than the proactive optimization agent (genius tier) which expects
+        # structured spend data
+        answer = await self.agents.knowledge_base(
+            f"The user is asking about procurement savings and cost optimization. "
+            f"Answer their question helpfully: {text}"
+        )
+        return {"message": answer}
 
     async def _handle_knowledge(self, session: ConversationSession, text: str) -> dict:
         """Handle general questions via the knowledge base."""

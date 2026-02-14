@@ -5,7 +5,7 @@ No Temporal, no LangGraph. Just async function calls.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from .core import TalosAgents
 from ..schemas import (
     RequisitionPipeline, ParsedRequisition, ComplianceResult,
@@ -15,14 +15,18 @@ from ..schemas import (
 log = logging.getLogger("talos.pipeline")
 
 
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 class RequisitionPipelineRunner:
     """
     Runs the full req-to-PO pipeline:
     intake_parser -> policy_compliance -> demand_aggregation -> price_tracker -> [approval] -> po_generation
     """
 
-    def __init__(self, client_type: str = "university"):
-        self.agents = TalosAgents(client_type)
+    def __init__(self, client_type: str = "university", agents: TalosAgents | None = None):
+        self.agents = agents or TalosAgents(client_type)
         self.client_type = client_type
 
     async def process(
@@ -51,7 +55,7 @@ class RequisitionPipelineRunner:
             pipe.status = "parsed"
             pipe.agent_calls.append({
                 "agent": "intake_parser", "step": 1,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": _utcnow_iso(),
             })
             log.info(f"[{pipe.id}] Parsed: {pipe.parsed.req_id} | {len(pipe.parsed.items)} items | "
                      f"${pipe.parsed.estimated_total:.2f} | confidence={pipe.parsed.confidence_score}")
@@ -62,7 +66,7 @@ class RequisitionPipelineRunner:
             pipe.status = "compliance_checked"
             pipe.agent_calls.append({
                 "agent": "policy_compliance", "step": 2,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": _utcnow_iso(),
             })
 
             blocking_violations = [v for v in pipe.compliance.violations if v.severity == "block"]
@@ -82,7 +86,7 @@ class RequisitionPipelineRunner:
             pipe.status = "aggregation_checked" if pipe.status != "compliance_blocked" else pipe.status
             pipe.agent_calls.append({
                 "agent": "demand_aggregation", "step": 3,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": _utcnow_iso(),
             })
             log.info(f"[{pipe.id}] Aggregation: {pipe.aggregation.recommended_action} | "
                      f"savings=${pipe.aggregation.consolidation_savings_estimate:.2f}")
@@ -102,7 +106,7 @@ class RequisitionPipelineRunner:
                 pipe.status = "priced" if pipe.status not in ("compliance_blocked",) else pipe.status
                 pipe.agent_calls.append({
                     "agent": "price_tracker", "step": 4,
-                    "timestamp": datetime.utcnow().isoformat(),
+                    "timestamp": _utcnow_iso(),
                 })
                 log.info(f"[{pipe.id}] Pricing: {len(pipe.pricing.sources_checked)} sources | "
                          f"${pipe.pricing.lowest_price:.2f}-${pipe.pricing.highest_price:.2f} | "
@@ -118,7 +122,7 @@ class RequisitionPipelineRunner:
                         baseline_price=current_price,
                         new_price=pipe.pricing.recommended_price,
                         volume=qty,
-                        period=datetime.utcnow().strftime("%Y-%m"),
+                        period=datetime.now(timezone.utc).strftime("%Y-%m"),
                         evidence=[f"Price tracking: {pipe.pricing.recommended_vendor}"],
                     ).calculate()
 
@@ -130,7 +134,7 @@ class RequisitionPipelineRunner:
                     pipe.status = "po_generated"
                     pipe.agent_calls.append({
                         "agent": "purchase_order", "step": 5,
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": _utcnow_iso(),
                     })
                     log.info(f"[{pipe.id}] PO: {pipe.purchase_order.po_number} | ${pipe.purchase_order.total:.2f}")
                 else:
@@ -142,8 +146,9 @@ class RequisitionPipelineRunner:
             pipe.errors.append(str(e))
             pipe.status = "error"
 
-        # Track total LLM cost
-        pipe.total_llm_cost = self.agents.router.total_cost()
+        # Track total LLM cost using drain to prevent unbounded history accumulation
+        calls = self.agents.router.drain_history()
+        pipe.total_llm_cost = sum(c.cost for c in calls)
 
         return pipe
 
@@ -154,8 +159,8 @@ class RequisitionPipelineRunner:
 class SavingsAnalyzer:
     """Analyze historical spend data to find savings opportunities."""
 
-    def __init__(self, client_type: str = "university"):
-        self.agents = TalosAgents(client_type)
+    def __init__(self, client_type: str = "university", agents: TalosAgents | None = None):
+        self.agents = agents or TalosAgents(client_type)
 
     async def verify_single(
         self,
@@ -176,7 +181,7 @@ class SavingsAnalyzer:
             evidence=evidence,
         )
 
-    async def find_optimization(self, spend_data: str) -> OptimizationDiscovery:
+    async def find_optimization(self, spend_data: str):
         """Find optimization opportunities in spend data."""
         return await self.agents.find_optimizations(spend_data)
 

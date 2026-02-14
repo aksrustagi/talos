@@ -1,12 +1,5 @@
 """
 Talos LLM Router — Calls OpenRouter, returns Pydantic models.
-
-Game-changing decision #4: COST-TIERED MULTI-MODEL
-- Cheap tasks (parsing, routing) use DeepSeek at ~$0.001/call
-- Smart tasks (compliance, pricing) use Claude Sonnet at ~$0.01/call
-- Critical tasks (savings verification) use Claude Opus at ~$0.10/call
-- Every call tracked: tokens, cost, latency, agent, model
-- OpenRouter provides 200+ models — no vendor lock-in
 """
 from __future__ import annotations
 
@@ -36,20 +29,6 @@ class LLMCall(BaseModel):
 
 
 class LLMRouter:
-    """
-    Calls OpenRouter. Returns structured Pydantic models or raw text.
-
-    Usage:
-        router = LLMRouter()
-        result = await router.call(
-            agent="intake_parser",
-            tier="cheap",
-            system_prompt="You are...",
-            user_message="I need 50 boxes of gloves...",
-            response_model=ParsedRequisition,
-        )
-    """
-
     def __init__(self):
         self.config = get_config()
         self._client: httpx.AsyncClient | None = None
@@ -75,10 +54,6 @@ class LLMRouter:
         max_tokens: int = 4096,
         retries: int = 2,
     ) -> T | str:
-        """
-        Call an LLM. If response_model is provided, parse into Pydantic.
-        Retries on failure. Tracks costs.
-        """
         model = self.config.get_model(tier)
         last_error = None
 
@@ -90,6 +65,15 @@ class LLMRouter:
                 )
                 self.history.append(call_record)
                 return result
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+                last_error = e
+                log.warning(
+                    f"[{agent}] attempt {attempt+1}/{retries+1} failed due to network error: "
+                    f"{type(e).__name__}: {e}"
+                )
+                if attempt < retries:
+                    import asyncio
+                    await asyncio.sleep(2 ** attempt)
             except Exception as e:
                 last_error = e
                 log.warning(f"[{agent}] attempt {attempt+1} failed: {e}")
@@ -97,9 +81,8 @@ class LLMRouter:
                     import asyncio
                     await asyncio.sleep(2 ** attempt)
 
-        # All retries failed
         self.history.append(LLMCall(agent=agent, model=model, success=False, error=str(last_error)))
-
+        
         if response_model:
             log.error(f"[{agent}] all retries failed, returning default {response_model.__name__}")
             return response_model()
@@ -109,11 +92,15 @@ class LLMRouter:
         self, agent, model, system_prompt, user_message,
         response_model, temperature, max_tokens,
     ) -> tuple:
-        """Single LLM call attempt."""
+        if not self.config.openrouter_api_key:
+            raise ValueError(
+                "OPENROUTER_API_KEY is not set or empty. "
+                "Set the OPENROUTER_API_KEY environment variable or run 'python -m talos setup' to configure."
+            )
+
         client = await self._get_client()
         start = time.time()
 
-        # Build messages
         json_instruction = ""
         if response_model:
             schema_str = json.dumps(response_model.model_json_schema(), indent=2)
@@ -152,7 +139,6 @@ class LLMRouter:
 
         data = resp.json()
 
-        # Check for API-level errors
         if "error" in data:
             raise Exception(f"OpenRouter error: {data['error']}")
 
@@ -181,16 +167,13 @@ class LLMRouter:
         return content, call_record
 
     def _parse_json(self, content: str, model: Type[T]) -> T:
-        """Parse LLM output into Pydantic model with multiple fallback strategies."""
         cleaned = content.strip()
 
-        # Strategy 1: Direct parse
         try:
             return model.model_validate_json(cleaned)
         except Exception:
             pass
 
-        # Strategy 2: Strip markdown fences
         if cleaned.startswith("```"):
             lines = cleaned.split("\n")
             inner = "\n".join(lines[1:])
@@ -201,7 +184,6 @@ class LLMRouter:
             except Exception:
                 pass
 
-        # Strategy 3: Find JSON object in response
         try:
             start = cleaned.index("{")
             depth = 0
@@ -214,7 +196,6 @@ class LLMRouter:
         except (ValueError, Exception):
             pass
 
-        # Strategy 4: Try json.loads then validate
         try:
             obj = json.loads(cleaned)
             return model.model_validate(obj)
@@ -224,7 +205,11 @@ class LLMRouter:
         log.error(f"Could not parse into {model.__name__}. Content: {cleaned[:500]}")
         return model()
 
-    # ---- Cost reporting ----
+    def drain_history(self) -> list[LLMCall]:
+        """Return current history and clear it. Prevents unbounded accumulation."""
+        calls = self.history.copy()
+        self.history.clear()
+        return calls
 
     def total_cost(self) -> float:
         return sum(c.cost for c in self.history)

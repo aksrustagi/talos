@@ -1,17 +1,16 @@
 """
 Talos Schemas — Every data structure agents produce and consume.
-
-Game-changing decision #3: STRONG TYPING EVERYWHERE
-- Every agent input/output is a Pydantic model
-- Validation catches LLM hallucinations at the boundary
-- Auto-generated JSON Schema drives API docs and LLM prompts
 """
 from __future__ import annotations
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Optional, Literal
 from uuid import uuid4
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 # ---- Enums ----
@@ -191,13 +190,13 @@ class OptimizationDiscovery(BaseModel):
     priority: Literal["high", "medium", "low"] = "medium"
 
 
-# ---- Conversation Models (Decision #2: doanything-style UX) ----
+# ---- Conversation Models ----
 
 class ChatMessage(BaseModel):
     """A single message in a conversation."""
     role: Literal["user", "assistant", "system"] = "user"
     content: str = ""
-    timestamp: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    timestamp: str = Field(default_factory=_utcnow_iso)
     metadata: dict = {}
 
 class ConversationSession(BaseModel):
@@ -208,7 +207,7 @@ class ConversationSession(BaseModel):
     department: str = ""
     pipeline_id: str | None = None
     status: str = "active"
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = Field(default_factory=_utcnow_iso)
 
 
 # ---- Pipeline State ----
@@ -220,8 +219,8 @@ class RequisitionPipeline(BaseModel):
     source_channel: str = "portal"
     requester_name: str = ""
     department: str = ""
-    status: str = "received"  # received -> parsed -> compliance_checked -> aggregation_checked -> priced -> approved -> po_generated -> complete
-    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    status: str = "received"
+    created_at: str = Field(default_factory=_utcnow_iso)
 
     # Agent outputs (filled as pipeline progresses)
     parsed: ParsedRequisition | None = None
@@ -235,3 +234,12 @@ class RequisitionPipeline(BaseModel):
     total_llm_cost: float = 0.0
     agent_calls: list[dict] = []
     errors: list[str] = []
+
+
+# ---- API Error Response ----
+
+class ErrorResponse(BaseModel):
+    """Standard error response for all API endpoints."""
+    error: str
+    detail: str = ""
+    status_code: int = 400

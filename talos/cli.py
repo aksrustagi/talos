@@ -26,8 +26,22 @@ import asyncio
 import sys
 import os
 import logging
+import stat
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+def _setup_logging():
+    """Configure logging from config, with fallback to INFO."""
+    try:
+        from .config import get_config
+        level = get_config().log_level
+    except Exception:
+        level = "INFO"
+    logging.basicConfig(
+        level=getattr(logging, level, logging.INFO),
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    )
+
+
 log = logging.getLogger("talos")
 
 
@@ -138,7 +152,7 @@ def run_setup():
     client_map = {"1": "university", "2": "nypa", "3": "northwell"}
     client_type = client_map.get(client_choice, "university")
 
-    # Step 3: Write .env
+    # Step 3: Write .env with restricted permissions
     env_content = f"""# Talos AI Configuration
 OPENROUTER_API_KEY={current_key}
 TALOS_CLIENT={client_type}
@@ -152,10 +166,26 @@ TALOS_DB=talos.db
 # Notifications (optional)
 # TALOS_SLACK_WEBHOOK=https://hooks.slack.com/services/...
 # TALOS_NOTIFY_EMAIL=procurement@yourorg.com
+
+# Authentication (optional — comma-separated API keys)
+# TALOS_API_KEYS=key1,key2,key3
+
+# SMTP for email notifications (optional)
+# TALOS_SMTP_HOST=smtp.gmail.com
+# TALOS_SMTP_PORT=587
+# TALOS_SMTP_USER=user@example.com
+# TALOS_SMTP_PASSWORD=app-password
+# TALOS_SMTP_FROM=talos@yourorg.com
 """
 
     with open(env_path, "w") as f:
         f.write(env_content)
+
+    # Set file permissions to owner-only (chmod 600)
+    try:
+        os.chmod(env_path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass  # Windows or restricted environments may not support this
 
     print(f"""
 {'='*60}
@@ -353,7 +383,10 @@ async def run_demo():
     )
 
     database.save_pipeline(result, config.client_type.value)
-    database.save_llm_calls(runner.agents.router.history, result.id)
+    # drain_history already called in process(), save any remaining
+    calls = runner.agents.router.drain_history()
+    if calls:
+        database.save_llm_calls(calls, result.id)
 
     print(f"\n{'='*65}")
     print(f"  PIPELINE RESULT: {result.id}")
@@ -379,6 +412,7 @@ async def run_demo():
     print(f"  Dashboard: {dash}")
 
     runner.agents.router.print_costs()
+    database.close()
     await runner.close()
 
 
@@ -479,10 +513,12 @@ def show_info():
     print(f"\n{'='*50}")
     print(f"  TALOS AI Configuration")
     print(f"{'='*50}")
-    print(f"  Version:   0.2.0")
+    print(f"  Version:   0.3.0")
     print(f"  Client:    {config.client_type.value}")
     print(f"  API Key:   {'SET' if config.openrouter_api_key else 'NOT SET'}")
+    print(f"  Auth:      {'ENABLED' if config.api_keys else 'DISABLED'}")
     print(f"  Slack:     {'SET' if config.slack_webhook_url else 'NOT SET'}")
+    print(f"  Email:     {'SET' if config.smtp_host else 'NOT SET'}")
     print(f"  Database:  {config.db_path}")
     print(f"  Model Tiers:")
     print(f"    cheap:   {config.model_cheap}")
@@ -510,6 +546,8 @@ def show_info():
 # ==================================================================
 
 def main():
+    _setup_logging()
+
     if len(sys.argv) < 2:
         print("""
   TALOS AI — Autonomous Procurement Intelligence

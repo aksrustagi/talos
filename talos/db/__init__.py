@@ -12,11 +12,16 @@ from __future__ import annotations
 import json
 import sqlite3
 import logging
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from ..schemas import RequisitionPipeline, SavingsRecord, ConversationSession, ChatMessage
 
 log = logging.getLogger("talos.db")
+
+
+def _utcnow_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class TalosDB:
@@ -29,15 +34,24 @@ class TalosDB:
         self._persistent_conn: sqlite3.Connection | None = None
         self._init_db()
 
-    def _conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _conn(self):
+        """Context manager that properly manages connections.
+        In-memory DBs reuse a persistent connection; file DBs open/close per operation.
+        """
         if self.db_path == ":memory:":
             if self._persistent_conn is None:
-                self._persistent_conn = sqlite3.connect(":memory:")
+                self._persistent_conn = sqlite3.connect(":memory:", check_same_thread=False)
                 self._persistent_conn.row_factory = sqlite3.Row
-            return self._persistent_conn
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+            yield self._persistent_conn
+        else:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            try:
+                yield conn
+                conn.commit()
+            finally:
+                conn.close()
 
     def _init_db(self):
         with self._conn() as conn:
@@ -134,6 +148,17 @@ class TalosDB:
             """)
         log.info(f"Database initialized: {self.db_path}")
 
+    def close(self):
+        """Close persistent connection if one exists."""
+        if self._persistent_conn:
+            self._persistent_conn.close()
+            self._persistent_conn = None
+
+    @staticmethod
+    def _escape_like(value: str) -> str:
+        """Escape special characters for LIKE queries to prevent injection."""
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
     # ---- Pipeline CRUD ----
 
     def save_pipeline(self, pipe: RequisitionPipeline, client_type: str = "university"):
@@ -149,7 +174,7 @@ class TalosDB:
                     pipe.parsed.estimated_total if pipe.parsed else 0,
                     pipe.parsed.category if pipe.parsed else "",
                     pipe.total_llm_cost, pipe.model_dump_json(),
-                    datetime.utcnow().isoformat(),
+                    _utcnow_iso(),
                 ),
             )
             if pipe.savings:
@@ -162,19 +187,20 @@ class TalosDB:
                 return RequisitionPipeline.model_validate_json(row["data"])
         return None
 
-    def list_pipelines(self, limit: int = 50, status: str | None = None) -> list[dict]:
+    def list_pipelines(self, limit: int = 50, offset: int = 0, status: str | None = None) -> list[dict]:
+        limit = min(limit, 200)
         with self._conn() as conn:
             if status:
                 rows = conn.execute(
                     "SELECT id, requester_name, department, status, estimated_total, category, llm_cost, created_at "
-                    "FROM pipelines WHERE status = ? ORDER BY created_at DESC LIMIT ?",
-                    (status, limit),
+                    "FROM pipelines WHERE status = ? ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (status, limit, offset),
                 ).fetchall()
             else:
                 rows = conn.execute(
                     "SELECT id, requester_name, department, status, estimated_total, category, llm_cost, created_at "
-                    "FROM pipelines ORDER BY created_at DESC LIMIT ?",
-                    (limit,),
+                    "FROM pipelines ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
                 ).fetchall()
             return [dict(r) for r in rows]
 
@@ -196,15 +222,19 @@ class TalosDB:
                 ),
             )
 
-    def list_savings(self, period: str | None = None) -> list[dict]:
+    def list_savings(self, period: str | None = None, limit: int = 50, offset: int = 0) -> list[dict]:
+        limit = min(limit, 200)
         with self._conn() as conn:
             if period:
                 rows = conn.execute(
-                    "SELECT * FROM savings WHERE period = ? ORDER BY total_savings DESC",
-                    (period,),
+                    "SELECT * FROM savings WHERE period = ? ORDER BY total_savings DESC LIMIT ? OFFSET ?",
+                    (period, limit, offset),
                 ).fetchall()
             else:
-                rows = conn.execute("SELECT * FROM savings ORDER BY created_at DESC").fetchall()
+                rows = conn.execute(
+                    "SELECT * FROM savings ORDER BY created_at DESC LIMIT ? OFFSET ?",
+                    (limit, offset),
+                ).fetchall()
             return [dict(r) for r in rows]
 
     def savings_summary(self) -> dict:
@@ -231,7 +261,7 @@ class TalosDB:
                     session.session_id, session.requester_name, session.department,
                     session.pipeline_id, session.status,
                     session.model_dump_json(),
-                    datetime.utcnow().isoformat(),
+                    _utcnow_iso(),
                 ),
             )
 
@@ -242,12 +272,13 @@ class TalosDB:
                 return ConversationSession.model_validate_json(row["data"])
         return None
 
-    def list_conversations(self, limit: int = 20, status: str = "active") -> list[dict]:
+    def list_conversations(self, limit: int = 20, offset: int = 0, status: str = "active") -> list[dict]:
+        limit = min(limit, 200)
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT session_id, requester_name, department, pipeline_id, status, created_at "
-                "FROM conversations WHERE status = ? ORDER BY updated_at DESC LIMIT ?",
-                (status, limit),
+                "FROM conversations WHERE status = ? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                (status, limit, offset),
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -267,7 +298,7 @@ class TalosDB:
                     """UPDATE vendor_memory SET last_price = ?, best_price = ?,
                        contract_price = COALESCE(?, contract_price),
                        last_updated = ?, notes = ? WHERE id = ?""",
-                    (price, best, contract_price, datetime.utcnow().isoformat(), notes, existing["id"]),
+                    (price, best, contract_price, _utcnow_iso(), notes, existing["id"]),
                 )
             else:
                 conn.execute(
@@ -277,11 +308,12 @@ class TalosDB:
                 )
 
     def get_vendor_prices(self, item_category: str) -> list[dict]:
+        escaped = self._escape_like(item_category)
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT vendor_name, last_price, best_price, contract_price, last_updated, notes "
-                "FROM vendor_memory WHERE item_category LIKE ? ORDER BY best_price ASC",
-                (f"%{item_category}%",),
+                "FROM vendor_memory WHERE item_category LIKE ? ESCAPE '\\' ORDER BY best_price ASC",
+                (f"%{escaped}%",),
             ).fetchall()
             return [dict(r) for r in rows]
 
@@ -307,14 +339,15 @@ class TalosDB:
         log.info(f"Imported {len(orders)} historical orders")
 
     def find_similar_orders(self, category: str, days_back: int = 90) -> list[dict]:
+        escaped = self._escape_like(category)
         with self._conn() as conn:
             rows = conn.execute(
                 """SELECT po_number, vendor_name, item_description, quantity, unit_price,
                           total, department, order_date
                    FROM historical_orders
-                   WHERE category LIKE ?
+                   WHERE category LIKE ? ESCAPE '\\'
                    ORDER BY order_date DESC LIMIT 20""",
-                (f"%{category}%",),
+                (f"%{escaped}%",),
             ).fetchall()
             return [dict(r) for r in rows]
 

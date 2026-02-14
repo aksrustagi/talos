@@ -10,8 +10,9 @@ Game-changing decision #7: PROACTIVE NOTIFICATIONS
 from __future__ import annotations
 
 import logging
-import json
-from datetime import datetime
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 import httpx
 
@@ -44,6 +45,11 @@ class NotificationService:
             if self.config.slack_webhook_url:
                 await self._send_slack(message)
 
+            if self.config.notification_email and self.config.smtp_host:
+                subject = f"Approval needed: {pipeline.parsed.category if pipeline.parsed else 'Requisition'} (${(pipeline.parsed.estimated_total if pipeline.parsed else 0):,.2f})"
+                body = self._build_email_body(pipeline, step)
+                self._send_email(subject, body)
+
             log.info(f"Approval notification sent for {pipeline.id} to {step.approver_role}")
 
     async def notify_savings_found(self, pipeline_id: str, amount: float, vendor: str):
@@ -70,6 +76,12 @@ class NotificationService:
         if self.config.slack_webhook_url:
             await self._send_slack(message)
 
+        if self.config.notification_email and self.config.smtp_host:
+            self._send_email(
+                f"Talos Savings Alert: ${amount:,.2f} found",
+                f"Pipeline: {pipeline_id}\nAmount: ${amount:,.2f}\nVendor: {vendor}\nTalos share (33%): ${amount * 0.33:,.2f}",
+            )
+
     async def notify_compliance_block(self, pipeline: RequisitionPipeline):
         """Notify when a requisition is blocked by compliance."""
         if not pipeline.compliance:
@@ -92,7 +104,7 @@ class NotificationService:
                             f"Pipeline: `{pipeline.id}`\n"
                             f"Requester: {pipeline.requester_name}\n"
                             f"Department: {pipeline.department}\n"
-                            f"Total: ${pipeline.parsed.estimated_total:,.2f if pipeline.parsed else 0}\n\n"
+                            f"Total: ${(pipeline.parsed.estimated_total if pipeline.parsed else 0):,.2f}\n\n"
                             f"*Violations:*\n{violation_text}"
                         ),
                     },
@@ -103,11 +115,17 @@ class NotificationService:
         if self.config.slack_webhook_url:
             await self._send_slack(message)
 
+        if self.config.notification_email and self.config.smtp_host:
+            self._send_email(
+                f"Compliance Block: {pipeline.id}",
+                f"Pipeline: {pipeline.id}\nRequester: {pipeline.requester_name}\n\nViolations:\n{violation_text}",
+            )
+
     def _build_approval_message(self, pipeline: RequisitionPipeline, step) -> dict:
         """Build Slack Block Kit message for approval request."""
         parsed = pipeline.parsed
         return {
-            "text": f"Approval needed: {parsed.category if parsed else 'Unknown'} (${parsed.estimated_total:,.2f if parsed else 0})",
+            "text": f"Approval needed: {parsed.category if parsed else 'Unknown'} (${(parsed.estimated_total if parsed else 0):,.2f})",
             "blocks": [
                 {
                     "type": "header",
@@ -122,7 +140,7 @@ class NotificationService:
                             f"*Requester:* {pipeline.requester_name}\n"
                             f"*Department:* {pipeline.department}\n"
                             f"*Category:* {parsed.category if parsed else 'N/A'}\n"
-                            f"*Total:* ${parsed.estimated_total:,.2f if parsed else 0}\n"
+                            f"*Total:* ${(parsed.estimated_total if parsed else 0):,.2f}\n"
                             f"*Approver:* {step.approver_role}\n"
                             f"*Reason:* {step.threshold_reason}"
                         ),
@@ -162,6 +180,27 @@ class NotificationService:
             ],
         }
 
+    def _build_email_body(self, pipeline: RequisitionPipeline, step) -> str:
+        """Build email body for approval request."""
+        parsed = pipeline.parsed
+        items_text = ""
+        if parsed and parsed.items:
+            items_text = "\n".join([f"  - {i.description} x {i.quantity}" for i in parsed.items[:10]])
+
+        return (
+            f"Approval Request\n"
+            f"{'=' * 40}\n\n"
+            f"Pipeline: {pipeline.id}\n"
+            f"Requester: {pipeline.requester_name}\n"
+            f"Department: {pipeline.department}\n"
+            f"Category: {parsed.category if parsed else 'N/A'}\n"
+            f"Total: ${(parsed.estimated_total if parsed else 0):,.2f}\n"
+            f"Approver: {step.approver_role}\n"
+            f"Reason: {step.threshold_reason}\n\n"
+            f"Items:\n{items_text}\n\n"
+            f"Please log in to approve or reject this requisition."
+        )
+
     async def _send_slack(self, message: dict):
         """Send a message to Slack via webhook."""
         if not self.config.slack_webhook_url:
@@ -178,6 +217,31 @@ class NotificationService:
                 log.warning(f"Slack webhook returned {resp.status_code}: {resp.text[:200]}")
         except Exception as e:
             log.warning(f"Failed to send Slack notification: {e}")
+
+    def _send_email(self, subject: str, body: str):
+        """Send an email via SMTP."""
+        if not self.config.smtp_host or not self.config.notification_email:
+            log.debug("Email not configured, skipping")
+            return
+
+        try:
+            msg = MIMEMultipart()
+            msg["From"] = self.config.smtp_from or self.config.smtp_user
+            msg["To"] = self.config.notification_email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(body, "plain"))
+
+            with smtplib.SMTP(self.config.smtp_host, self.config.smtp_port) as server:
+                server.ehlo()
+                if self.config.smtp_port != 25:
+                    server.starttls()
+                if self.config.smtp_user and self.config.smtp_password:
+                    server.login(self.config.smtp_user, self.config.smtp_password)
+                server.send_message(msg)
+
+            log.info(f"Email sent to {self.config.notification_email}: {subject}")
+        except Exception as e:
+            log.warning(f"Failed to send email: {e}")
 
     async def close(self):
         if self._client and not self._client.is_closed:
