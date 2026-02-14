@@ -5,15 +5,20 @@ Provides REST API endpoints for interacting with AI agents,
 managing procurement workflows, and integrating with Jaggaer.
 """
 
+import os
 from contextlib import asynccontextmanager
 from typing import Optional, List, Any
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Depends, Request, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 import structlog
 
+from audit import get_audit_logger, generate_audit_pdf
+from middleware.auth import AuthMiddleware, get_auth_user, AuthUser
+from middleware.observability import TracingMiddleware, metrics
 from agents import (
     AgentOrchestrator,
     PriceWatchAgent,
@@ -23,6 +28,9 @@ from agents import (
     ApprovalWorkflowAgent,
     VendorSelectionAgent,
 )
+
+from temporalio.client import Client as TemporalClient
+from workflows.requisition import RequisitionToOrderWorkflow, RequisitionInput
 
 # Configure structured logging
 structlog.configure(
@@ -85,38 +93,32 @@ class WebhookPayload(BaseModel):
     timestamp: Optional[str] = None
 
 
+class WorkflowRequisitionRequest(BaseModel):
+    """Request to start a full requisition-to-order workflow via Temporal."""
+    items: List[dict] = Field(..., description="Line items to order")
+    budget_code: str = Field(..., description="Budget/cost center code")
+    urgency: str = Field("standard", description="Urgency: standard, rush, emergency")
+    needed_by: Optional[str] = Field(None, description="Date needed by (ISO format)")
+    notes: Optional[str] = Field(None, description="Additional notes")
+
+
+class WorkflowApprovalSignal(BaseModel):
+    """Signal to approve or reject a workflow-managed requisition."""
+    decision: str = Field(..., description="approve or reject")
+    comments: Optional[str] = Field(None, description="Approval comments")
+
+
 # ============================================
 # Dependencies
 # ============================================
 
-class UserContext:
-    """User context extracted from request."""
-    def __init__(
-        self,
-        user_id: str,
-        university_id: str,
-        email: str,
-        department: str,
-        role: str,
-    ):
-        self.user_id = user_id
-        self.university_id = university_id
-        self.email = email
-        self.department = department
-        self.role = role
+async def get_current_user(request: Request) -> AuthUser:
+    """Extract authenticated user from the request.
 
-
-async def get_current_user(request: Request) -> UserContext:
-    """Extract current user from request headers/token."""
-    # In production, this would validate JWT/session
-    # For now, use headers or defaults
-    return UserContext(
-        user_id=request.headers.get("X-User-ID", "user_001"),
-        university_id=request.headers.get("X-University-ID", "university_001"),
-        email=request.headers.get("X-User-Email", "user@university.edu"),
-        department=request.headers.get("X-Department", "Procurement"),
-        role=request.headers.get("X-Role", "requester"),
-    )
+    Delegates to the auth middleware — supports JWT when
+    TALOS_JWT_SECRET is set, otherwise uses X-* headers.
+    """
+    return get_auth_user(request)
 
 
 # ============================================
@@ -136,10 +138,33 @@ agents = {
 orchestrator = AgentOrchestrator(agents)
 
 
+TEMPORAL_HOST = os.environ.get("TEMPORAL_HOST", "localhost:7233")
+TEMPORAL_TASK_QUEUE = os.environ.get("TEMPORAL_TASK_QUEUE", "talos-procurement")
+
+# Temporal client — initialized at startup if Temporal is available
+temporal_client: Optional[TemporalClient] = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler."""
+    global temporal_client
     logger.info("Starting Talos Procurement AI Platform")
+
+    # Try to connect to Temporal (non-blocking — falls back to direct calls)
+    try:
+        temporal_client = await TemporalClient.connect(TEMPORAL_HOST)
+        logger.info("Connected to Temporal", host=TEMPORAL_HOST)
+    except Exception as e:
+        logger.warning(
+            "Temporal not available, falling back to direct agent calls",
+            error=str(e),
+        )
+        temporal_client = None
+
+    # Initialize audit database
+    get_audit_logger()
+
     yield
     logger.info("Shutting down Talos Procurement AI Platform")
 
@@ -151,7 +176,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS middleware
+# Middleware stack (applied in reverse order — last added is outermost)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Configure appropriately for production
@@ -159,6 +184,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(TracingMiddleware)
+app.add_middleware(AuthMiddleware)
 
 
 # ============================================
@@ -168,7 +195,7 @@ app.add_middleware(
 @app.post("/api/chat", response_model=ChatResponse, tags=["Chat"])
 async def chat(
     message: ChatMessage,
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """
     Main chat endpoint - routes to appropriate agent.
@@ -217,7 +244,7 @@ async def chat(
 async def chat_chain(
     message: ChatMessage,
     agent_ids: List[str],
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """
     Execute a chain of agents sequentially.
@@ -256,7 +283,7 @@ async def chat_chain(
 @app.post("/api/requisitions", tags=["Requisitions"])
 async def create_requisition(
     req: RequisitionRequest,
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Create a new requisition using the Requisition Agent."""
     try:
@@ -296,7 +323,7 @@ async def create_requisition(
 @app.get("/api/requisitions/{requisition_id}", tags=["Requisitions"])
 async def get_requisition(
     requisition_id: str,
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Get requisition details."""
     # Implementation would query Convex
@@ -314,7 +341,7 @@ async def get_requisition(
 async def compare_prices(
     product_id: str,
     quantity: int = 1,
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Compare prices across vendors for a product."""
     try:
@@ -341,7 +368,7 @@ async def compare_prices(
 async def get_price_history(
     product_id: str,
     days: int = 365,
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Get historical price data and predictions."""
     try:
@@ -368,7 +395,7 @@ async def create_price_alert(
     product_id: str,
     alert_type: str,
     threshold: float,
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Create a price alert for a product."""
     try:
@@ -398,7 +425,7 @@ async def create_price_alert(
 
 @app.get("/api/approvals/pending", tags=["Approvals"])
 async def get_pending_approvals(
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Get pending approvals for current user."""
     try:
@@ -422,7 +449,7 @@ async def get_pending_approvals(
 @app.post("/api/approvals/action", tags=["Approvals"])
 async def process_approval(
     action: ApprovalAction,
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Process an approval decision."""
     try:
@@ -458,7 +485,7 @@ async def process_approval(
 @app.get("/api/vendors/{vendor_id}/score", tags=["Vendors"])
 async def get_vendor_score(
     vendor_id: str,
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Get vendor scorecard and performance metrics."""
     try:
@@ -483,7 +510,7 @@ async def get_vendor_score(
 async def find_diverse_vendors(
     category: str,
     diversity_type: Optional[str] = None,
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Find diverse suppliers for a category."""
     try:
@@ -517,7 +544,7 @@ async def find_diverse_vendors(
 @app.get("/api/analytics/spend", tags=["Analytics"])
 async def get_spend_analytics(
     period: str = "month",
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Get spend analytics summary."""
     # Implementation would query Convex and use spend analytics agent
@@ -533,7 +560,7 @@ async def get_spend_analytics(
 @app.get("/api/analytics/savings", tags=["Analytics"])
 async def get_savings_report(
     period: str = "month",
-    user: UserContext = Depends(get_current_user),
+    user: AuthUser = Depends(get_current_user),
 ):
     """Get savings and ROI report."""
     return {
@@ -542,6 +569,165 @@ async def get_savings_report(
         "by_source": {},
         "roi": 0,
     }
+
+
+# ============================================
+# Temporal Workflow Endpoints
+# ============================================
+
+@app.post("/api/workflows/requisition", tags=["Workflows"])
+async def start_requisition_workflow(
+    req: WorkflowRequisitionRequest,
+    user: AuthUser = Depends(get_current_user),
+):
+    """
+    Start a full requisition-to-order workflow via Temporal.
+
+    This replaces direct pipeline calls with a durable, resumable
+    Temporal workflow that orchestrates agents in sequence:
+      1. Budget validation
+      2. Requisition creation (RequisitionAgent)
+      3. Vendor selection (VendorSelectionAgent)
+      4. Price comparison (PriceCompareAgent)
+      5. Human approval (waits for signal)
+      6. Approval processing (ApprovalWorkflowAgent)
+      7. PO generation and transmission
+
+    Falls back to direct agent call if Temporal is unavailable.
+    """
+    if temporal_client is None:
+        # Fallback: use direct agent call
+        logger.info("Temporal unavailable, falling back to direct requisition agent call")
+        message = f"""Create a requisition with the following details:
+- Items: {req.items}
+- Budget Code: {req.budget_code}
+- Urgency: {req.urgency}
+- Needed By: {req.needed_by or 'Not specified'}
+- Notes: {req.notes or 'None'}
+"""
+        context = {
+            "user_name": user.email.split("@")[0],
+            "department": user.department,
+            "budget_code": req.budget_code,
+        }
+        result = await orchestrator.execute(
+            agent_id="requisition",
+            message=message,
+            user_id=user.user_id,
+            university_id=user.university_id,
+            context=context,
+        )
+        return {
+            "mode": "direct",
+            "status": "created",
+            "agent_response": result["response"],
+        }
+
+    try:
+        workflow_input = RequisitionInput(
+            items=req.items,
+            budget_code=req.budget_code,
+            urgency=req.urgency,
+            user_id=user.user_id,
+            university_id=user.university_id,
+            user_email=user.email,
+            department=user.department,
+            needed_by=req.needed_by,
+            notes=req.notes,
+        )
+
+        import uuid
+        workflow_id = f"req-{uuid.uuid4()}"
+
+        handle = await temporal_client.start_workflow(
+            RequisitionToOrderWorkflow.run,
+            workflow_input,
+            id=workflow_id,
+            task_queue=TEMPORAL_TASK_QUEUE,
+        )
+
+        return {
+            "mode": "temporal",
+            "workflow_id": workflow_id,
+            "status": "started",
+            "message": "Requisition workflow started. Use GET /api/workflows/{workflow_id}/status to track progress.",
+        }
+
+    except Exception as e:
+        logger.error("Workflow start error", error=str(e))
+        raise HTTPException(status_code=500, detail=f"Failed to start workflow: {str(e)}")
+
+
+@app.get("/api/workflows/{workflow_id}/status", tags=["Workflows"])
+async def get_workflow_status(
+    workflow_id: str,
+    user: AuthUser = Depends(get_current_user),
+):
+    """Query the current status of a running workflow."""
+    if temporal_client is None:
+        raise HTTPException(status_code=503, detail="Temporal not available")
+
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        status = await handle.query(RequisitionToOrderWorkflow.get_status)
+        return {"workflow_id": workflow_id, **status}
+
+    except Exception as e:
+        logger.error("Workflow status error", error=str(e), workflow_id=workflow_id)
+        raise HTTPException(status_code=404, detail=f"Workflow not found: {workflow_id}")
+
+
+@app.post("/api/workflows/{workflow_id}/approve", tags=["Workflows"])
+async def approve_workflow(
+    workflow_id: str,
+    signal: WorkflowApprovalSignal,
+    user: AuthUser = Depends(get_current_user),
+):
+    """
+    Send an approval/rejection signal to a waiting workflow.
+
+    The workflow pauses at step 5 (human approval) and waits
+    for this signal before proceeding to PO generation.
+    """
+    if temporal_client is None:
+        raise HTTPException(status_code=503, detail="Temporal not available")
+
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        await handle.signal(
+            RequisitionToOrderWorkflow.human_approval,
+            args=[signal.decision, user.user_id, signal.comments],
+        )
+
+        return {
+            "workflow_id": workflow_id,
+            "signal_sent": True,
+            "decision": signal.decision,
+            "approver": user.user_id,
+        }
+
+    except Exception as e:
+        logger.error("Workflow approval error", error=str(e), workflow_id=workflow_id)
+        raise HTTPException(status_code=500, detail=f"Failed to send approval signal: {str(e)}")
+
+
+@app.get("/api/workflows/{workflow_id}/result", tags=["Workflows"])
+async def get_workflow_result(
+    workflow_id: str,
+    user: AuthUser = Depends(get_current_user),
+):
+    """Get the final result of a completed workflow."""
+    if temporal_client is None:
+        raise HTTPException(status_code=503, detail="Temporal not available")
+
+    try:
+        handle = temporal_client.get_workflow_handle(workflow_id)
+        result = await handle.result()
+        return {"workflow_id": workflow_id, "result": result}
+
+    except Exception as e:
+        logger.error("Workflow result error", error=str(e), workflow_id=workflow_id)
+        raise HTTPException(status_code=404, detail=f"Workflow result not available: {workflow_id}")
 
 
 # ============================================
@@ -603,6 +789,113 @@ async def sync_catalog(vendor_id: str):
 
 
 # ============================================
+# Audit Trail Endpoints
+# ============================================
+
+@app.get("/api/audit/{requisition_id}", tags=["Audit"])
+async def get_audit_trail(
+    requisition_id: str,
+    user: AuthUser = Depends(get_current_user),
+):
+    """
+    Get the complete AI decision chain for a requisition.
+
+    Returns every agent call, input/output, model used, cost,
+    decision reasoning, and linkage to procurement objects.
+    Answers: "Why did the system choose this vendor?"
+             "Why was this price accepted?"
+             "Who approved this and when?"
+    """
+    audit_logger = get_audit_logger()
+    chain = audit_logger.get_decision_chain(requisition_id)
+    stats = audit_logger.get_summary_stats(requisition_id)
+
+    if not chain:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No audit entries found for requisition {requisition_id}",
+        )
+
+    return {
+        "requisition_id": requisition_id,
+        "summary": stats,
+        "decision_chain": chain,
+    }
+
+
+@app.get("/api/audit/export/{requisition_id}", tags=["Audit"])
+async def export_audit_pdf(
+    requisition_id: str,
+    user: AuthUser = Depends(get_current_user),
+):
+    """
+    Generate and download a PDF audit report for a requisition.
+
+    The report includes executive summary, decision chain,
+    full audit log entries, and a data integrity statement.
+    Suitable for CFO review and federal grant audits.
+    """
+    audit_logger = get_audit_logger()
+    entries = audit_logger.get_by_requisition(requisition_id)
+
+    if not entries:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No audit entries found for requisition {requisition_id}",
+        )
+
+    try:
+        pdf_path = generate_audit_pdf(
+            requisition_id=requisition_id,
+            audit_logger=audit_logger,
+        )
+        return FileResponse(
+            path=pdf_path,
+            media_type="application/pdf",
+            filename=f"audit_report_{requisition_id}.pdf",
+        )
+    except Exception as e:
+        logger.error("PDF generation error", error=str(e), requisition_id=requisition_id)
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+
+
+@app.get("/api/audit/po/{po_id}", tags=["Audit"])
+async def get_audit_by_po(
+    po_id: str,
+    user: AuthUser = Depends(get_current_user),
+):
+    """Get audit trail for a purchase order."""
+    audit_logger = get_audit_logger()
+    entries = audit_logger.get_by_po(po_id)
+
+    if not entries:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No audit entries found for PO {po_id}",
+        )
+
+    return {"po_id": po_id, "entries": entries}
+
+
+@app.get("/api/audit/contract/{contract_id}", tags=["Audit"])
+async def get_audit_by_contract(
+    contract_id: str,
+    user: AuthUser = Depends(get_current_user),
+):
+    """Get audit trail for a contract."""
+    audit_logger = get_audit_logger()
+    entries = audit_logger.get_by_contract(contract_id)
+
+    if not entries:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No audit entries found for contract {contract_id}",
+        )
+
+    return {"contract_id": contract_id, "entries": entries}
+
+
+# ============================================
 # Health & Status Endpoints
 # ============================================
 
@@ -612,7 +905,14 @@ async def health():
     return {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
+        "temporal_connected": temporal_client is not None,
     }
+
+
+@app.get("/api/metrics", tags=["System"])
+async def get_metrics():
+    """Return current request metrics."""
+    return metrics.snapshot()
 
 
 @app.get("/api/agents", tags=["System"])
