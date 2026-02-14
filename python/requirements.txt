@@ -48,3 +48,26 @@ pytest-cov>=4.1.0
 # Type checking
 mypy>=1.8.0
 types-requests>=2.31.0
+
+# A2A Protocol (Agent-to-Agent)
+a2a-sdk>=0.3.0
+
+# Composio (250+ tool integrations)
+composio>=1.0.0
+composio-langchain>=1.0.0
+
+# CrewAI (multi-agent orchestration)
+crewai>=0.80.0
+crewai-tools>=0.14.0
+
+# OpenAI Agents SDK (triage + handoff)
+openai-agents>=0.1.0
+
+# Letta / MemGPT (persistent agent memory)
+letta>=0.6.0
+
+# Google ADK (Agent Development Kit)
+google-adk>=1.0.0
+
+# Communication channels
+resend>=2.0.0
