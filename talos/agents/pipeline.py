@@ -14,8 +14,18 @@ from ..schemas import (
     RequisitionPipeline, ParsedRequisition, ComplianceResult,
     AggregationOpportunity, PriceTrackingResult, SavingsRecord,
 )
+from ..llm import LLMParseError
 
 log = logging.getLogger("talos.pipeline")
+
+
+class PipelineCostLimitExceeded(Exception):
+    """Raised when LLM cost exceeds the per-pipeline limit."""
+    def __init__(self, pipeline_id: str, cost: float, limit: float):
+        self.pipeline_id = pipeline_id
+        self.cost = cost
+        self.limit = limit
+        super().__init__(f"Pipeline {pipeline_id} LLM cost ${cost:.4f} exceeded limit ${limit:.2f}")
 
 
 def _utcnow_iso() -> str:
@@ -31,6 +41,13 @@ class RequisitionPipelineRunner:
     def __init__(self, client_type: str = "university", agents: TalosAgents | None = None):
         self.agents = agents or TalosAgents(client_type)
         self.client_type = client_type
+
+    def _check_cost_limit(self, pipe: RequisitionPipeline):
+        """Check if running LLM cost exceeds the per-pipeline limit. Raises if exceeded."""
+        config = get_config()
+        running_cost = sum(c.cost for c in self.agents.router.history)
+        if running_cost > config.max_llm_cost_per_pipeline:
+            raise PipelineCostLimitExceeded(pipe.id, running_cost, config.max_llm_cost_per_pipeline)
 
     async def process(
         self,
@@ -48,6 +65,7 @@ class RequisitionPipelineRunner:
             requester_name=requester_name,
             department=department,
         )
+        config = get_config()
 
         try:
             # ---- STEP 1: Parse ----
@@ -62,6 +80,7 @@ class RequisitionPipelineRunner:
             })
             log.info(f"[{pipe.id}] Parsed: {pipe.parsed.req_id} | {len(pipe.parsed.items)} items | "
                      f"${pipe.parsed.estimated_total:.2f} | confidence={pipe.parsed.confidence_score}")
+            self._check_cost_limit(pipe)
 
             # ---- STEP 2: Compliance ----
             log.info(f"[{pipe.id}] Step 2: Checking compliance...")
@@ -82,6 +101,7 @@ class RequisitionPipelineRunner:
             log.info(f"[{pipe.id}] Compliant: {pipe.compliance.is_compliant} | "
                      f"{len(pipe.compliance.violations)} violations | "
                      f"{len(pipe.compliance.required_approvals)} approvals needed")
+            self._check_cost_limit(pipe)
 
             # ---- STEP 3: Aggregation ----
             log.info(f"[{pipe.id}] Step 3: Checking aggregation opportunities...")
@@ -127,7 +147,7 @@ class RequisitionPipelineRunner:
                         volume=qty,
                         period=datetime.now(timezone.utc).strftime("%Y-%m"),
                         evidence=[f"Price tracking: {pipe.pricing.recommended_vendor}"],
-                    ).calculate()
+                    ).calculate(revenue_share_pct=config.revenue_share_pct)
 
             # ---- STEP 5: Generate PO (if auto and compliant) ----
             if auto_generate_po and pipe.status == "priced" and pipe.compliance.is_compliant:

@@ -66,7 +66,7 @@ class NotificationService:
                             f"Pipeline: `{pipeline_id}`\n"
                             f"Amount: *${amount:,.2f}*\n"
                             f"Vendor: {vendor}\n"
-                            f"Talos share (33%): ${amount * 0.33:,.2f}"
+                            f"Talos share: ${amount * self.config.revenue_share_pct:,.2f}"
                         ),
                     },
                 },
@@ -79,7 +79,7 @@ class NotificationService:
         if self.config.notification_email and self.config.smtp_host:
             self._send_email(
                 f"Talos Savings Alert: ${amount:,.2f} found",
-                f"Pipeline: {pipeline_id}\nAmount: ${amount:,.2f}\nVendor: {vendor}\nTalos share (33%): ${amount * 0.33:,.2f}",
+                f"Pipeline: {pipeline_id}\nAmount: ${amount:,.2f}\nVendor: {vendor}\nTalos share: ${amount * self.config.revenue_share_pct:,.2f}",
             )
 
     async def notify_compliance_block(self, pipeline: RequisitionPipeline):
@@ -240,6 +240,12 @@ class NotificationService:
                 server.send_message(msg)
 
             log.info(f"Email sent to {self.config.notification_email}: {subject}")
+        except smtplib.SMTPAuthenticationError as e:
+            log.error(f"SMTP authentication failed — check credentials: {e}")
+            raise  # Auth errors should surface to the caller
+        except smtplib.SMTPConnectError as e:
+            log.error(f"SMTP connection failed — check host/port: {e}")
+            raise  # Connection errors should surface
         except Exception as e:
             log.warning(f"Failed to send email: {e}")
 

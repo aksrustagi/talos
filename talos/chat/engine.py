@@ -13,6 +13,7 @@ This is the core differentiator vs Coupa/Zip/Procurify's form-heavy UX.
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 
 from ..schemas import ChatMessage, ConversationSession
@@ -21,6 +22,11 @@ from ..agents.pipeline import RequisitionPipelineRunner
 from ..config import get_config
 
 log = logging.getLogger("talos.chat")
+
+# Session TTL: 30 days in seconds
+_SESSION_TTL_SECONDS = 30 * 24 * 3600
+# Max sessions to keep in memory before pruning
+_MAX_SESSIONS_IN_MEMORY = 10000
 
 
 # Intent categories with priority order (higher index = higher priority for disambiguation)
@@ -81,18 +87,45 @@ class ChatEngine:
         self.agents = agents or TalosAgents(client_type)
         self.pipeline_runner = pipeline_runner or RequisitionPipelineRunner(client_type)
         self.sessions: dict[str, ConversationSession] = {}
+        self._session_last_access: dict[str, float] = {}  # session_id -> timestamp
 
     def _get_or_create_session(self, session_id: str | None = None,
                                 requester: str = "", department: str = "") -> ConversationSession:
         if session_id and session_id in self.sessions:
+            self._session_last_access[session_id] = time.time()
             return self.sessions[session_id]
         session = ConversationSession(requester_name=requester, department=department)
         self.sessions[session.session_id] = session
+        self._session_last_access[session.session_id] = time.time()
+        # Prune if memory limit exceeded
+        self._prune_sessions()
         return session
 
     def load_session(self, session: ConversationSession):
         """Load a session from DB into memory."""
         self.sessions[session.session_id] = session
+        self._session_last_access[session.session_id] = time.time()
+
+    def _prune_sessions(self):
+        """Remove expired sessions from memory to prevent unbounded growth."""
+        now = time.time()
+        # Remove sessions older than TTL
+        expired = [
+            sid for sid, ts in self._session_last_access.items()
+            if now - ts > _SESSION_TTL_SECONDS
+        ]
+        for sid in expired:
+            self.sessions.pop(sid, None)
+            self._session_last_access.pop(sid, None)
+
+        # If still over limit, evict oldest
+        if len(self.sessions) > _MAX_SESSIONS_IN_MEMORY:
+            sorted_sessions = sorted(self._session_last_access.items(), key=lambda x: x[1])
+            to_evict = len(self.sessions) - _MAX_SESSIONS_IN_MEMORY
+            for sid, _ in sorted_sessions[:to_evict]:
+                self.sessions.pop(sid, None)
+                self._session_last_access.pop(sid, None)
+            log.info(f"Pruned {to_evict} oldest sessions (memory limit)")
 
     def _detect_intent(self, message: str) -> str:
         """Detect what the user wants using scored keyword matching.

@@ -20,8 +20,9 @@ import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request, Depends
+from fastapi import FastAPI, HTTPException, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -72,7 +73,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Talos AI — Procurement Intelligence",
     description="The doanything.com for procurement. Talk naturally, Talos handles the rest.",
-    version="0.3.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
@@ -85,7 +86,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_methods=["GET", "POST"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "Idempotency-Key"],
 )
 
 
@@ -141,6 +142,12 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
+# ---- Idempotency Helper ----
+def _get_idempotency_key(request: Request) -> str | None:
+    """Extract idempotency key from request headers."""
+    return request.headers.get("Idempotency-Key") or request.headers.get("idempotency-key")
+
+
 # ---- Request/Response Models ----
 
 class ChatRequest(BaseModel):
@@ -180,8 +187,9 @@ class KnowledgeRequest(BaseModel):
 # CONVERSATIONAL ENDPOINTS (Decision #2: doanything-style UX)
 # =====================================================================
 
-@app.post("/chat", dependencies=[Depends(verify_api_key)])
-async def chat(req: ChatRequest):
+@app.post("/v1/chat", dependencies=[Depends(verify_api_key)])
+@app.post("/chat", dependencies=[Depends(verify_api_key)], include_in_schema=False)
+async def chat(req: ChatRequest, request: Request):
     """
     Talk to Talos naturally. The primary interface.
 
@@ -191,6 +199,13 @@ async def chat(req: ChatRequest):
     - "Can I buy equipment over $5K on my NSF grant?"
     - "Find me savings on lab supplies"
     """
+    # Idempotency check
+    idem_key = _get_idempotency_key(request)
+    if idem_key and db:
+        cached = db.get_idempotency_response(idem_key)
+        if cached:
+            return cached
+
     # Try to restore session from DB if not in memory
     if req.session_id and req.session_id not in chat_engine.sessions:
         saved = db.get_conversation(req.session_id)
@@ -233,14 +248,20 @@ async def chat(req: ChatRequest):
                 pipe.pricing.recommended_vendor if pipe.pricing else "Unknown",
             )
 
+    # Cache for idempotency
+    if idem_key and db:
+        db.save_idempotency_key(idem_key, result)
+
     return result
 
-@app.get("/chat/sessions", dependencies=[Depends(verify_api_key)])
+@app.get("/v1/chat/sessions", dependencies=[Depends(verify_api_key)])
+@app.get("/chat/sessions", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def list_chat_sessions(limit: int = 20, offset: int = 0):
     """List active chat sessions."""
     return db.list_conversations(limit=limit, offset=offset)
 
-@app.get("/chat/sessions/{session_id}", dependencies=[Depends(verify_api_key)])
+@app.get("/v1/chat/sessions/{session_id}", dependencies=[Depends(verify_api_key)])
+@app.get("/chat/sessions/{session_id}", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def get_chat_session(session_id: str):
     """Get a specific chat session with full history."""
     session = db.get_conversation(session_id)
@@ -253,9 +274,17 @@ async def get_chat_session(session_id: str):
 # PIPELINE ENDPOINTS (Direct agent access for integrations)
 # =====================================================================
 
-@app.post("/requisitions", dependencies=[Depends(verify_api_key)])
-async def submit_requisition(req: RequisitionRequest):
+@app.post("/v1/requisitions", dependencies=[Depends(verify_api_key)])
+@app.post("/requisitions", dependencies=[Depends(verify_api_key)], include_in_schema=False)
+async def submit_requisition(req: RequisitionRequest, request: Request):
     """Submit a procurement request. Runs full pipeline: parse -> comply -> aggregate -> price."""
+    # Idempotency check
+    idem_key = _get_idempotency_key(request)
+    if idem_key and db:
+        cached = db.get_idempotency_response(idem_key)
+        if cached:
+            return cached
+
     recent = db.find_similar_orders(req.raw_text[:50]) if db else None
 
     result = await pipeline_runner.process(
@@ -286,7 +315,7 @@ async def submit_requisition(req: RequisitionRequest):
             result.pricing.recommended_vendor if result.pricing else "Unknown",
         )
 
-    return {
+    response = {
         "pipeline_id": result.id,
         "status": result.status,
         "parsed": result.parsed.model_dump() if result.parsed else None,
@@ -299,14 +328,22 @@ async def submit_requisition(req: RequisitionRequest):
         "errors": result.errors,
     }
 
+    # Cache for idempotency
+    if idem_key and db:
+        db.save_idempotency_key(idem_key, response)
 
-@app.get("/requisitions", dependencies=[Depends(verify_api_key)])
+    return response
+
+
+@app.get("/v1/requisitions", dependencies=[Depends(verify_api_key)])
+@app.get("/requisitions", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def list_requisitions(limit: int = 50, offset: int = 0, status: str | None = None):
     """List all processed requisitions."""
     return db.list_pipelines(limit=limit, offset=offset, status=status)
 
 
-@app.get("/requisitions/{pipeline_id}", dependencies=[Depends(verify_api_key)])
+@app.get("/v1/requisitions/{pipeline_id}", dependencies=[Depends(verify_api_key)])
+@app.get("/requisitions/{pipeline_id}", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def get_requisition(pipeline_id: str):
     """Get full details of a specific requisition pipeline."""
     result = db.get_pipeline(pipeline_id)
@@ -315,11 +352,19 @@ async def get_requisition(pipeline_id: str):
     return result.model_dump()
 
 
+@app.get("/v1/requisitions/{pipeline_id}/audit", dependencies=[Depends(verify_api_key)])
+@app.get("/requisitions/{pipeline_id}/audit", dependencies=[Depends(verify_api_key)], include_in_schema=False)
+async def get_requisition_audit(pipeline_id: str):
+    """Get the immutable audit trail for a pipeline."""
+    return db.get_audit_log(pipeline_id)
+
+
 # =====================================================================
 # PRICING & SAVINGS ENDPOINTS
 # =====================================================================
 
-@app.post("/prices/check", dependencies=[Depends(verify_api_key)])
+@app.post("/v1/prices/check", dependencies=[Depends(verify_api_key)])
+@app.post("/prices/check", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def check_prices(req: PriceCheckRequest):
     """Check pricing across all sources for an item."""
     result = await agents.price_tracker(
@@ -342,7 +387,8 @@ async def check_prices(req: PriceCheckRequest):
     return result.model_dump()
 
 
-@app.post("/savings/verify", dependencies=[Depends(verify_api_key)])
+@app.post("/v1/savings/verify", dependencies=[Depends(verify_api_key)])
+@app.post("/savings/verify", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def verify_savings(req: SavingsVerifyRequest):
     """Verify a savings claim — the billing basis."""
     result = await savings_analyzer.verify_single(
@@ -358,20 +404,23 @@ async def verify_savings(req: SavingsVerifyRequest):
     return result.model_dump()
 
 
-@app.post("/savings/optimize", dependencies=[Depends(verify_api_key)])
+@app.post("/v1/savings/optimize", dependencies=[Depends(verify_api_key)])
+@app.post("/savings/optimize", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def find_optimizations(req: OptimizationRequest):
     """Find savings opportunities in spend data."""
     result = await savings_analyzer.find_optimization(req.spend_data)
     return result.model_dump()
 
 
-@app.get("/savings", dependencies=[Depends(verify_api_key)])
+@app.get("/v1/savings", dependencies=[Depends(verify_api_key)])
+@app.get("/savings", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def list_savings(period: str | None = None, limit: int = 50, offset: int = 0):
     """List all verified savings records."""
     return db.list_savings(period=period, limit=limit, offset=offset)
 
 
-@app.get("/savings/summary", dependencies=[Depends(verify_api_key)])
+@app.get("/v1/savings/summary", dependencies=[Depends(verify_api_key)])
+@app.get("/savings/summary", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def savings_summary():
     """Get savings summary with Talos billing amount."""
     return db.savings_summary()
@@ -381,14 +430,16 @@ async def savings_summary():
 # KNOWLEDGE & VENDOR INTELLIGENCE
 # =====================================================================
 
-@app.post("/knowledge", dependencies=[Depends(verify_api_key)])
+@app.post("/v1/knowledge", dependencies=[Depends(verify_api_key)])
+@app.post("/knowledge", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def ask_knowledge(req: KnowledgeRequest):
     """Ask a procurement question — Knowledge Base Agent."""
     answer = await agents.knowledge_base(req.question)
     return {"question": req.question, "answer": answer}
 
 
-@app.get("/vendors/{category}", dependencies=[Depends(verify_api_key)])
+@app.get("/v1/vendors/{category}", dependencies=[Depends(verify_api_key)])
+@app.get("/vendors/{category}", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def get_vendor_prices(category: str):
     """Get historical vendor pricing for a category from Talos memory."""
     return db.get_vendor_prices(category)
@@ -419,13 +470,22 @@ async def handle_slack_action(request: Request):
 
     action_value = actions[0].get("value", "")
     user_name = payload.get("user", {}).get("name", "Unknown")
+    # Extract client IP for audit
+    client_ip = request.client.host if request.client else "unknown"
 
     if action_value.startswith("approve_"):
         pipeline_id = action_value[8:]
         pipe = db.get_pipeline(pipeline_id)
         if pipe:
+            old_status = pipe.status
             pipe.status = "approved"
             db.save_pipeline(pipe, get_config().client_type.value)
+            # Immutable audit log
+            db.log_audit(
+                pipeline_id=pipeline_id, action="approve",
+                actor=user_name, old_value=old_status,
+                new_value="approved", ip_address=client_ip,
+            )
             log.info(f"Pipeline {pipeline_id} approved by {user_name}")
             return {"text": f"Approved by {user_name}. Pipeline {pipeline_id} is now approved."}
         return {"text": f"Pipeline {pipeline_id} not found."}
@@ -434,8 +494,15 @@ async def handle_slack_action(request: Request):
         pipeline_id = action_value[7:]
         pipe = db.get_pipeline(pipeline_id)
         if pipe:
+            old_status = pipe.status
             pipe.status = "rejected"
             db.save_pipeline(pipe, get_config().client_type.value)
+            # Immutable audit log
+            db.log_audit(
+                pipeline_id=pipeline_id, action="reject",
+                actor=user_name, old_value=old_status,
+                new_value="rejected", ip_address=client_ip,
+            )
             log.info(f"Pipeline {pipeline_id} rejected by {user_name}")
             return {"text": f"Rejected by {user_name}. Pipeline {pipeline_id} has been rejected."}
         return {"text": f"Pipeline {pipeline_id} not found."}
@@ -464,8 +531,9 @@ async def handle_slack_action(request: Request):
 class WorkflowSignalRequest(BaseModel):
     pipeline_id: str = Field(..., max_length=100)
 
-@app.post("/workflows/approve", dependencies=[Depends(verify_api_key)])
-async def workflow_approve(req: WorkflowSignalRequest):
+@app.post("/v1/workflows/approve", dependencies=[Depends(verify_api_key)])
+@app.post("/workflows/approve", dependencies=[Depends(verify_api_key)], include_in_schema=False)
+async def workflow_approve(req: WorkflowSignalRequest, request: Request):
     """Send approval signal to a running Temporal workflow."""
     config = get_config()
     if not config.enable_temporal:
@@ -477,14 +545,25 @@ async def workflow_approve(req: WorkflowSignalRequest):
         client = await Client.connect(config.temporal_address, namespace=config.temporal_namespace)
         handle = client.get_workflow_handle(f"talos-pipeline-{req.pipeline_id}")
         await handle.signal("approve")
+
+        # Audit log
+        client_ip = request.client.host if request.client else "unknown"
+        if db:
+            db.log_audit(
+                pipeline_id=req.pipeline_id, action="workflow_approve",
+                actor="api_caller", old_value="awaiting_approval",
+                new_value="approved", ip_address=client_ip,
+            )
+
         return {"status": "approved", "pipeline_id": req.pipeline_id}
     except Exception as e:
         log.error(f"Failed to signal approval for {req.pipeline_id}: {e}")
         raise HTTPException(500, f"Failed to signal workflow: {e}")
 
 
-@app.post("/workflows/reject", dependencies=[Depends(verify_api_key)])
-async def workflow_reject(req: WorkflowSignalRequest):
+@app.post("/v1/workflows/reject", dependencies=[Depends(verify_api_key)])
+@app.post("/workflows/reject", dependencies=[Depends(verify_api_key)], include_in_schema=False)
+async def workflow_reject(req: WorkflowSignalRequest, request: Request):
     """Send rejection signal to a running Temporal workflow."""
     config = get_config()
     if not config.enable_temporal:
@@ -496,13 +575,23 @@ async def workflow_reject(req: WorkflowSignalRequest):
         client = await Client.connect(config.temporal_address, namespace=config.temporal_namespace)
         handle = client.get_workflow_handle(f"talos-pipeline-{req.pipeline_id}")
         await handle.signal("reject")
+
+        client_ip = request.client.host if request.client else "unknown"
+        if db:
+            db.log_audit(
+                pipeline_id=req.pipeline_id, action="workflow_reject",
+                actor="api_caller", old_value="awaiting_approval",
+                new_value="rejected", ip_address=client_ip,
+            )
+
         return {"status": "rejected", "pipeline_id": req.pipeline_id}
     except Exception as e:
         log.error(f"Failed to signal rejection for {req.pipeline_id}: {e}")
         raise HTTPException(500, f"Failed to signal workflow: {e}")
 
 
-@app.get("/workflows/{pipeline_id}/status", dependencies=[Depends(verify_api_key)])
+@app.get("/v1/workflows/{pipeline_id}/status", dependencies=[Depends(verify_api_key)])
+@app.get("/workflows/{pipeline_id}/status", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def workflow_status(pipeline_id: str):
     """Query the current status of a running Temporal workflow."""
     config = get_config()
@@ -525,13 +614,15 @@ async def workflow_status(pipeline_id: str):
 # DASHBOARD & OPERATIONAL ENDPOINTS
 # =====================================================================
 
-@app.get("/dashboard", dependencies=[Depends(verify_api_key)])
+@app.get("/v1/dashboard", dependencies=[Depends(verify_api_key)])
+@app.get("/dashboard", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def dashboard():
     """Overview dashboard: pipeline counts, savings, costs, ROI."""
     return db.dashboard()
 
 
-@app.get("/costs", dependencies=[Depends(verify_api_key)])
+@app.get("/v1/costs", dependencies=[Depends(verify_api_key)])
+@app.get("/costs", dependencies=[Depends(verify_api_key)], include_in_schema=False)
 async def costs():
     """LLM cost breakdown by agent."""
     return db.cost_summary()
@@ -542,13 +633,14 @@ async def health():
     config = get_config()
     return {
         "status": "healthy",
-        "version": "0.3.0",
+        "version": "0.4.0",
         "client": config.client_type.value,
         "api_key_set": bool(config.openrouter_api_key),
         "auth_enabled": bool(config.api_keys),
         "slack_configured": bool(config.slack_webhook_url),
         "temporal_enabled": config.enable_temporal,
         "temporal_address": config.temporal_address if config.enable_temporal else None,
+        "revenue_share_pct": config.revenue_share_pct,
         "db": config.db_path,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }

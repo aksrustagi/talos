@@ -70,6 +70,7 @@ class TestSessionManagement:
     def setup_method(self):
         self.engine = ChatEngine.__new__(ChatEngine)
         self.engine.sessions = {}
+        self.engine._session_last_access = {}
 
     def test_create_new_session(self):
         session = self.engine._get_or_create_session(requester="Dr. Chen", department="Chemistry")

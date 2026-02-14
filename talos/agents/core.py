@@ -34,8 +34,40 @@ class TalosAgents:
         self.policies = get_policies(client_type)
 
     def _p(self, key: str) -> str:
-        """Get policy value."""
-        return self.policies.get(key, "")
+        """Get policy value with sanitization against prompt injection."""
+        raw = self.policies.get(key, "")
+        return self._sanitize_policy(raw)
+
+    @staticmethod
+    def _sanitize_policy(value: str) -> str:
+        """Sanitize policy strings to prevent prompt injection.
+
+        Strips patterns that could override system prompt behavior:
+        - Lines starting with "ignore" / "disregard" / "forget"
+        - System prompt override attempts
+        - Role switching attempts (e.g., "Assistant:", "System:")
+        """
+        if not value:
+            return ""
+        lines = value.split("\n")
+        safe_lines = []
+        for line in lines:
+            stripped = line.strip().lower()
+            # Block common prompt injection patterns
+            if any(stripped.startswith(p) for p in (
+                "ignore ", "disregard ", "forget ", "override ",
+                "you are now ", "new instructions:", "system:",
+                "assistant:", "human:", "[system]", "<<sys>>",
+            )):
+                log.warning(f"Blocked potential prompt injection in policy: {line[:80]}")
+                continue
+            safe_lines.append(line)
+        return "\n".join(safe_lines)
+
+    def _revenue_share_pct(self) -> float:
+        """Get the revenue share percentage from config."""
+        from ..config import get_config
+        return get_config().revenue_share_pct
 
     async def close(self):
         await self.router.close()
@@ -264,14 +296,14 @@ TAX: This is a tax-exempt institution. No tax should be included.
     ) -> SavingsRecord:
         system = f"""You are the Talos Savings Verification Agent for {self._p('name')}.
 
-CRITICAL: Your output determines Talos revenue (33% of verified savings). Be CONSERVATIVE and AUDITABLE.
+CRITICAL: Your output determines Talos revenue ({int(self._revenue_share_pct() * 100)}% of verified savings). Be CONSERVATIVE and AUDITABLE.
 
 VERIFICATION STEPS:
 1. Is the baseline price reasonable? (Not inflated to make savings look bigger)
 2. Is the new price real? (Actual achieved price, not a quote)
 3. Is the volume accurate? (Actual quantity purchased)
 4. Calculate: total_savings = (baseline_price - new_price) * volume
-5. Calculate: talos_share = total_savings * 0.33
+5. Calculate: talos_share = total_savings * {self._revenue_share_pct()}
 6. Assign confidence score:
    - 0.95+: Clear before/after with PO documentation
    - 0.80-0.94: Strong benchmark comparison
@@ -309,7 +341,7 @@ Fill in ALL fields of the SavingsRecord."""
         result.baseline_price = baseline_price
         result.new_price = new_price
         result.volume = volume
-        result.calculate()
+        result.calculate(revenue_share_pct=self._revenue_share_pct())
 
         return result
 

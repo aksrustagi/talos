@@ -77,13 +77,20 @@ class TestPipelineCRUD:
 
 
 class TestSavingsCRUD:
+    def _create_pipeline(self, db):
+        """Create a pipeline so FK constraints are satisfied."""
+        pipe = RequisitionPipeline(id="PIPE-TEST")
+        db.save_pipeline(pipe, "university")
+
     def test_save_and_list_savings(self, db, sample_savings):
+        self._create_pipeline(db)
         db.save_savings(sample_savings, "PIPE-TEST")
         results = db.list_savings()
         assert len(results) == 1
         assert results[0]["savings_id"] == sample_savings.savings_id
 
     def test_list_savings_by_period(self, db, sample_savings):
+        self._create_pipeline(db)
         sample_savings.period = "2025-01"
         db.save_savings(sample_savings, "PIPE-TEST")
         results = db.list_savings(period="2025-01")
@@ -92,6 +99,7 @@ class TestSavingsCRUD:
         assert len(results) == 0
 
     def test_savings_summary(self, db, sample_savings):
+        self._create_pipeline(db)
         db.save_savings(sample_savings, "PIPE-TEST")
         summary = db.savings_summary()
         assert summary["total_records"] == 1
@@ -177,6 +185,9 @@ class TestHistoricalOrders:
 
 class TestLLMCostTracking:
     def test_save_and_summarize_llm_calls(self, db):
+        # Create pipeline first so FK constraint is satisfied
+        pipe = RequisitionPipeline(id="PIPE-TEST")
+        db.save_pipeline(pipe, "university")
         calls = [
             LLMCall(agent="intake_parser", model="test-model", tokens_in=100, tokens_out=50, cost=0.01, latency_ms=500),
             LLMCall(agent="policy_compliance", model="test-model", tokens_in=200, tokens_out=100, cost=0.05, latency_ms=800),

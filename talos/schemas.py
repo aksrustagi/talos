@@ -159,10 +159,12 @@ class SavingsRecord(BaseModel):
     evidence: list[str] = []
     confidence: float = 0.0
     talos_share: float = 0.0
+    discovered_at: str = Field(default_factory=_utcnow_iso)
+    invoice_verified: bool = False  # True when matched against actual PO/invoice
 
-    def calculate(self) -> "SavingsRecord":
+    def calculate(self, revenue_share_pct: float = 0.33) -> "SavingsRecord":
         self.total_savings = (self.baseline_price - self.new_price) * self.volume
-        self.talos_share = self.total_savings * 0.33
+        self.talos_share = self.total_savings * revenue_share_pct
         return self
 
 class PriceTrackingResult(BaseModel):

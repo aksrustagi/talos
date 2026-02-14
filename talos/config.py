@@ -42,6 +42,13 @@ class Config(BaseModel):
     cors_origins: list[str] = []  # Allowed CORS origins; empty = localhost only in prod
     rate_limit_rpm: int = 60  # Max requests per minute per key
 
+    # Business
+    revenue_share_pct: float = 0.33  # Talos share of verified savings (33%)
+    max_llm_cost_per_pipeline: float = 5.0  # Circuit breaker: max $ per pipeline
+
+    # Structured logging
+    log_format: str = "text"  # "text" or "json"
+
     # SMTP for email notifications
     smtp_host: str = ""
     smtp_port: int = 587
@@ -85,6 +92,9 @@ class Config(BaseModel):
             api_keys=api_keys,
             cors_origins=cors_origins,
             rate_limit_rpm=int(os.getenv("TALOS_RATE_LIMIT_RPM", "60")),
+            revenue_share_pct=float(os.getenv("TALOS_REVENUE_SHARE_PCT", "0.33")),
+            max_llm_cost_per_pipeline=float(os.getenv("TALOS_MAX_LLM_COST_PER_PIPELINE", "5.0")),
+            log_format=os.getenv("TALOS_LOG_FORMAT", "text"),
             smtp_host=os.getenv("TALOS_SMTP_HOST", ""),
             smtp_port=int(os.getenv("TALOS_SMTP_PORT", "587")),
             smtp_user=os.getenv("TALOS_SMTP_USER", ""),

@@ -74,8 +74,7 @@ class TestParseJson:
         result = self.router._parse_json(content, ParsedRequisition)
         assert result.req_id == "REQ-003"
 
-    def test_parse_invalid_json_returns_default(self):
+    def test_parse_invalid_json_returns_none(self):
         content = "This is not JSON at all"
         result = self.router._parse_json(content, ParsedRequisition)
-        assert result.req_id.startswith("REQ-")  # Default factory still runs
-        assert result.estimated_total == 0.0
+        assert result is None

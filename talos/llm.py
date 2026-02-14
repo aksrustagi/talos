@@ -3,6 +3,7 @@ Talos LLM Router — Calls OpenRouter, returns Pydantic models.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -28,11 +29,27 @@ class LLMCall(BaseModel):
     error: str | None = None
 
 
+class LLMParseError(Exception):
+    """Raised when all LLM retries fail and response_model is specified."""
+    def __init__(self, agent: str, model: str, original_error: Exception | None = None):
+        self.agent = agent
+        self.model = model
+        self.original_error = original_error
+        super().__init__(
+            f"[{agent}] All retries exhausted on model '{model}'. "
+            f"Original error: {original_error}"
+        )
+
+
 class LLMRouter:
     def __init__(self):
         self.config = get_config()
         self._client: httpx.AsyncClient | None = None
         self.history: list[LLMCall] = []
+        # Concurrency limiter — prevents flooding OpenRouter
+        self._semaphore = asyncio.Semaphore(
+            int(self.config.rate_limit_rpm) if self.config.rate_limit_rpm else 60
+        )
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
@@ -57,35 +74,47 @@ class LLMRouter:
         model = self.config.get_model(tier)
         last_error = None
 
-        for attempt in range(retries + 1):
-            try:
-                result, call_record = await self._do_call(
-                    agent, model, system_prompt, user_message,
-                    response_model, temperature, max_tokens,
-                )
-                self.history.append(call_record)
-                return result
-            except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
-                last_error = e
-                log.warning(
-                    f"[{agent}] attempt {attempt+1}/{retries+1} failed due to network error: "
-                    f"{type(e).__name__}: {e}"
-                )
-                if attempt < retries:
-                    import asyncio
-                    await asyncio.sleep(2 ** attempt)
-            except Exception as e:
-                last_error = e
-                log.warning(f"[{agent}] attempt {attempt+1} failed: {e}")
-                if attempt < retries:
-                    import asyncio
-                    await asyncio.sleep(2 ** attempt)
+        async with self._semaphore:
+            for attempt in range(retries + 1):
+                try:
+                    result, call_record = await self._do_call(
+                        agent, model, system_prompt, user_message,
+                        response_model, temperature, max_tokens,
+                    )
+                    self.history.append(call_record)
+                    return result
+                except (httpx.ConnectError, httpx.TimeoutException, httpx.NetworkError) as e:
+                    last_error = e
+                    # Record failed attempt cost
+                    self.history.append(LLMCall(
+                        agent=agent, model=model, success=False,
+                        error=f"{type(e).__name__}: {e}",
+                    ))
+                    log.warning(
+                        f"[{agent}] attempt {attempt+1}/{retries+1} failed due to network error: "
+                        f"{type(e).__name__}: {e}"
+                    )
+                    if attempt < retries:
+                        # Jitter: base delay + randomized component
+                        import random
+                        delay = (2 ** attempt) + random.uniform(0, 1)
+                        await asyncio.sleep(delay)
+                except Exception as e:
+                    last_error = e
+                    # Record failed attempt cost
+                    self.history.append(LLMCall(
+                        agent=agent, model=model, success=False,
+                        error=str(e)[:500],
+                    ))
+                    log.warning(f"[{agent}] attempt {attempt+1} failed: {e}")
+                    if attempt < retries:
+                        import random
+                        delay = (2 ** attempt) + random.uniform(0, 1)
+                        await asyncio.sleep(delay)
 
-        self.history.append(LLMCall(agent=agent, model=model, success=False, error=str(last_error)))
-        
+        # All retries exhausted — raise explicit error instead of masking
         if response_model:
-            log.error(f"[{agent}] all retries failed, returning default {response_model.__name__}")
-            return response_model()
+            raise LLMParseError(agent=agent, model=model, original_error=last_error)
         return f"ERROR: {last_error}"
 
     async def _do_call(
@@ -134,6 +163,11 @@ class LLMRouter:
             json=payload,
         )
 
+        # Respect Retry-After header on rate limits
+        if resp.status_code == 429:
+            retry_after = int(resp.headers.get("Retry-After", "5"))
+            raise httpx.NetworkError(f"Rate limited (429). Retry after {retry_after}s.")
+
         if resp.status_code != 200:
             raise Exception(f"OpenRouter {resp.status_code}: {resp.text[:300]}")
 
@@ -145,6 +179,7 @@ class LLMRouter:
         usage = data.get("usage", {})
         latency = (time.time() - start) * 1000
 
+        # Prefer actual cost from OpenRouter; fallback to estimate
         cost = usage.get("total_cost", 0.0)
         if not cost:
             cost = (usage.get("prompt_tokens", 0) * 0.000003 +
@@ -162,11 +197,14 @@ class LLMRouter:
 
         if response_model:
             parsed = self._parse_json(content, response_model)
+            if parsed is None:
+                raise ValueError(f"Failed to parse LLM response into {response_model.__name__}")
             return parsed, call_record
 
         return content, call_record
 
-    def _parse_json(self, content: str, model: Type[T]) -> T:
+    def _parse_json(self, content: str, model: Type[T]) -> T | None:
+        """Attempt to parse LLM content into a Pydantic model. Returns None on failure."""
         cleaned = content.strip()
 
         try:
@@ -203,7 +241,7 @@ class LLMRouter:
             pass
 
         log.error(f"Could not parse into {model.__name__}. Content: {cleaned[:500]}")
-        return model()
+        return None
 
     def drain_history(self) -> list[LLMCall]:
         """Return current history and clear it. Prevents unbounded accumulation."""

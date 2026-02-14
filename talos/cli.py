@@ -32,16 +32,39 @@ import stat
 
 
 def _setup_logging():
-    """Configure logging from config, with fallback to INFO."""
+    """Configure logging from config, with fallback to INFO. Supports JSON format."""
     try:
         from .config import get_config
-        level = get_config().log_level
+        cfg = get_config()
+        level = cfg.log_level
+        log_format = cfg.log_format
     except Exception:
         level = "INFO"
-    logging.basicConfig(
-        level=getattr(logging, level, logging.INFO),
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
+        log_format = "text"
+
+    if log_format == "json":
+        import json as json_mod
+
+        class JsonFormatter(logging.Formatter):
+            def format(self, record):
+                return json_mod.dumps({
+                    "timestamp": self.formatTime(record),
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": record.getMessage(),
+                    "module": record.module,
+                    "line": record.lineno,
+                })
+
+        handler = logging.StreamHandler()
+        handler.setFormatter(JsonFormatter())
+        logging.root.addHandler(handler)
+        logging.root.setLevel(getattr(logging, level, logging.INFO))
+    else:
+        logging.basicConfig(
+            level=getattr(logging, level, logging.INFO),
+            format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        )
 
 
 log = logging.getLogger("talos")
