@@ -322,6 +322,48 @@ async def monitor_risk(risk_data: dict) -> dict:
 
 
 # ============================================
+# Agent 19: Category Strategy
+# ============================================
+
+@activity.defn(name="develop_category_strategy")
+async def develop_category_strategy(strategy_data: dict) -> dict:
+    """Develop or update a procurement category strategy (Agent 19)."""
+    from agents.category_strategy import develop_strategy as _develop
+
+    router = _get_router()
+    client_mode = strategy_data.get("client_mode", "university")
+    return await _develop(router, strategy_data, client_mode=client_mode)
+
+
+# ============================================
+# Agent 20: Supplier Performance
+# ============================================
+
+@activity.defn(name="score_supplier")
+async def score_supplier(supplier_data: dict) -> dict:
+    """Score and evaluate supplier performance (Agent 20)."""
+    from agents.supplier_performance import score_supplier as _score
+
+    router = _get_router()
+    client_mode = supplier_data.get("client_mode", "university")
+    return await _score(router, supplier_data, client_mode=client_mode)
+
+
+# ============================================
+# Agent 21: Knowledge Base
+# ============================================
+
+@activity.defn(name="answer_procurement_question")
+async def answer_procurement_question(question_data: dict) -> dict:
+    """Answer a procurement-related question from the knowledge base (Agent 21)."""
+    from agents.knowledge_base import answer_question as _answer
+
+    router = _get_router()
+    client_mode = question_data.get("client_mode", "university")
+    return await _answer(router, question_data, client_mode=client_mode)
+
+
+# ============================================
 # Agent 22: Proactive Optimization
 # ============================================
 
