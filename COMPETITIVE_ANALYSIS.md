@@ -93,22 +93,42 @@ Universities process billions in cross-border vendor payments annually:
 - ACH: US-only, 1-3 day settlement
 - Early payment discounts lost due to slow settlement
 
-**Talos Procurement Token (TPT) / Stablecoin approach:**
-- **Instant settlement** -- vendor payments in seconds, not days
-- **Zero FX fees** -- USD-pegged stablecoin eliminates currency conversion
-- **On-chain audit trail** -- every payment immutably recorded
-- **Smart contract escrow** -- milestone-based payments for construction/consulting
-- **DeFi yield on float** -- treasury earns yield on undeployed procurement funds
-- **Programmable compliance** -- spending rules enforced at the token level
-- **Cross-university consortium** -- shared liquidity pool for group purchasing
+**Chain-Agnostic Settlement Layer (Neura Protocol Primary):**
+
+We use **Neura Protocol** (https://www.neuraprotocol.io/) as the primary settlement rail when mainnet launches, with production-ready fallbacks on Base, Ethereum, Solana, and Arbitrum.
+
+#### Why Neura Protocol?
+| Feature | Neura Protocol | Traditional Payment Rails |
+|---------|---------------|--------------------------|
+| Settlement time | Sub-second (QBFT finality) | 3-5 days (wire), 1-3 days (ACH) |
+| Transaction cost | $0 (gas-free $USN transfers) | $25-50 (wire), 2-3% (card) |
+| Compliance | SOC 2 Type II, on-chain auditability | Manual audit trails |
+| AI integration | On-chain AI agent execution | None |
+| Infrastructure | Sovereign (own hardware + private fiber) | AWS/cloud dependent |
+| Cross-border | Zero FX with $USN stablecoin | Opaque FX markups |
+
+#### Settlement Chain Hierarchy
+1. **Neura Protocol ($USN)** -- Gas-free, SOC 2, sub-second, AI-native (PRIMARY when mainnet)
+2. **Base (USDC)** -- $0.01 gas, Coinbase backing (PRODUCTION DEFAULT)
+3. **Solana (USDC)** -- $0.001 gas, sub-second finality (SPEED OPTIMIZED)
+4. **Ethereum (USDC)** -- $2.50 gas, highest security (HIGH-VALUE TRANSFERS)
+5. **Arbitrum (USDC)** -- $0.02 gas, large DeFi ecosystem (YIELD OPTIMIZED)
+
+#### Neura-Specific Advantages
+- **$USN stablecoin**: Basket-backed, yield-bearing, GENIUS-Act compliant, gas-free
+- **RPCFi model**: Transaction fees recycled into protocol-owned liquidity (revenue sharing)
+- **Babylon BTC security**: Bitcoin restaking for additional security guarantees
+- **veDEX**: AI-native DEX with automated strategies for treasury yield
+- **$ANKR burn mechanism**: Deflationary tokenomics tied to network usage
 
 ### DeFi Procurement Features
-- **Smart Contract POs** -- Purchase orders as on-chain smart contracts
+- **Smart Contract POs** -- Purchase orders as on-chain smart contracts (EVM, deploys to Neura/Base/Ethereum)
 - **Automated Three-Way Match** -- Invoice, receipt, PO verified on-chain
 - **Escrow Releases** -- Milestone payments auto-release when conditions met
+- **DeFi Yield on Float** -- Neura veDEX (~5% APY), Aave V3 (3-5%), Ondo USDY (4-5%), Kamino (5-6%)
 - **Supplier Financing** -- Vendors get paid instantly, university pays later (DeFi factoring)
 - **Tokenized Rebates** -- Vendor rebates as tokens, automatically distributed
-- **DAO Governance** -- Multi-university procurement consortium governed by token holders
+- **Cross-University Consortium** -- Shared liquidity pool for group purchasing power
 
 ---
 
