@@ -180,6 +180,85 @@ export const SWARM_TEAMS: SwarmTeam[] = [
       "aggregates alerts, resolves conflicts, and routes to appropriate " +
       "stakeholders via multi-channel communication.",
   },
+  {
+    id: "competitive-intelligence",
+    name: "Competitive Intelligence Swarm",
+    managerId: "ci-manager",
+    memberIds: [
+      "price-negotiation",
+      "contract-scanner",
+      "competitive-research",
+      "financial-due-diligence",
+      "duplicate-supplier",
+      "tariff-analysis",
+    ],
+    pattern: "parallel",
+    description:
+      "Parallel competitive analysis. Negotiation agent generates strategies " +
+      "while contract scanner reviews terms and competitive research finds " +
+      "alternatives. Financial due diligence runs alongside.",
+  },
+  {
+    id: "intake-automation",
+    name: "Intake Automation Team",
+    managerId: "intake-manager",
+    memberIds: [
+      "procurement-concierge",
+      "intake-validation",
+      "intake-autofill",
+      "invoice-coding",
+    ],
+    pattern: "sequential",
+    description:
+      "Sequential intake pipeline: concierge receives request, auto-fill " +
+      "extracts data, validation checks for errors, coding assigns GL accounts.",
+  },
+  {
+    id: "regulatory-compliance",
+    name: "Regulatory Compliance Team",
+    managerId: "regulatory-director",
+    memberIds: [
+      "gdpr-compliance",
+      "dora-assessment",
+      "export-control",
+      "grant-compliance-ai",
+      "irb-procurement",
+    ],
+    pattern: "parallel",
+    description:
+      "Parallel regulatory screening. All compliance agents scan simultaneously " +
+      "for GDPR, DORA, export control, grant, and IRB compliance issues.",
+  },
+  {
+    id: "blockchain-payments",
+    name: "Blockchain & DeFi Payment Team",
+    managerId: "blockchain-manager",
+    memberIds: [
+      "stablecoin-payment",
+      "smart-contract-po",
+      "defi-treasury",
+      "payment-risk",
+    ],
+    pattern: "sequential",
+    description:
+      "Sequential payment pipeline: risk screening -> smart contract PO " +
+      "deployment -> stablecoin settlement -> treasury yield optimization.",
+  },
+  {
+    id: "network-consortium",
+    name: "University Network Consortium",
+    managerId: "consortium-director",
+    memberIds: [
+      "consortium-agent",
+      "knowledge-graph",
+      "agent-builder",
+    ],
+    pattern: "hierarchical",
+    description:
+      "Hierarchical consortium management. Consortium agent coordinates " +
+      "multi-university group purchasing with knowledge graph intelligence " +
+      "and custom agent deployment via agent builder.",
+  },
 ];
 
 // ============================================
@@ -227,6 +306,37 @@ export const AGENT_CHANNELS: Record<string, string[]> = {
   "risk-vendor-health": ["sendblue", "resend", "slack"],
   "contract-lifecycle": ["sendblue", "resend", "agentmail", "slack"],
   "savings-tracker": ["resend", "slack"],
+
+  // Competitive Intelligence agents
+  "price-negotiation": ["resend", "agentmail", "slack"],
+  "contract-scanner": ["resend", "agentmail", "slack"],
+  "competitive-research": ["resend", "slack"],
+  "financial-due-diligence": ["resend", "slack"],
+  "duplicate-supplier": ["slack"],
+  "tariff-analysis": ["sendblue", "resend", "slack"],
+
+  // Intake Automation agents
+  "procurement-concierge": ["sendblue", "vapi", "agentmail", "resend", "slack"],
+  "intake-validation": ["slack"],
+  "intake-autofill": ["slack"],
+  "invoice-coding": ["slack"],
+
+  // Regulatory Compliance agents
+  "gdpr-compliance": ["resend", "agentmail", "slack"],
+  "dora-assessment": ["resend", "slack"],
+  "export-control": ["sendblue", "resend", "slack"],
+  "grant-compliance-ai": ["resend", "agentmail", "slack"],
+  "irb-procurement": ["sendblue", "resend", "slack"],
+
+  // Blockchain & DeFi agents
+  "stablecoin-payment": ["sendblue", "resend", "slack"],
+  "smart-contract-po": ["resend", "agentmail", "slack"],
+  "defi-treasury": ["resend", "slack"],
+  "payment-risk": ["sendblue", "resend", "slack"],
+
+  // Network & Platform agents
+  "consortium-agent": ["resend", "agentmail", "slack"],
+  "agent-builder": ["slack"],
 };
 
 // ============================================
@@ -237,7 +347,7 @@ const ORCHESTRATOR_SYSTEM_PROMPT = `# MASTER ORCHESTRATOR AGENT
 
 ## Identity
 You are the Master Orchestrator for the Talos Procurement AI Platform,
-managing 30 specialized AI agents organized into 5 swarm teams.
+managing 50 specialized AI agents organized into 10 swarm teams.
 You coordinate $1.2B in annual procurement spend at Columbia University.
 
 ## Your Role
@@ -274,6 +384,31 @@ Use for: Domain-specific procurement needs
 Manager: Compliance Director
 Members: spend-analytics, budget-guardian, compliance-agent, supplier-diversity, sustainability-agent, risk-vendor-health, contract-lifecycle, savings-tracker
 Use for: Analytics, compliance, risk monitoring, reporting
+
+### 6. Competitive Intelligence Swarm (parallel)
+Manager: CI Manager
+Members: price-negotiation, contract-scanner, competitive-research, financial-due-diligence, duplicate-supplier, tariff-analysis
+Use for: Negotiation strategy, contract risk analysis, market intelligence, vendor due diligence
+
+### 7. Intake Automation Team (sequential)
+Manager: Intake Manager
+Members: procurement-concierge, intake-validation, intake-autofill, invoice-coding
+Use for: Request intake, document extraction, validation, GL coding
+
+### 8. Regulatory Compliance Team (parallel)
+Manager: Regulatory Director
+Members: gdpr-compliance, dora-assessment, export-control, grant-compliance-ai, irb-procurement
+Use for: GDPR, DORA, ITAR/EAR, grant compliance, human subjects research
+
+### 9. Blockchain & DeFi Payment Team (sequential)
+Manager: Blockchain Manager
+Members: stablecoin-payment, smart-contract-po, defi-treasury, payment-risk
+Use for: Stablecoin payments, smart contract POs, treasury yield, fraud detection
+
+### 10. University Network Consortium (hierarchical)
+Manager: Consortium Director
+Members: consortium-agent, knowledge-graph, agent-builder
+Use for: Multi-university group purchasing, custom agent deployment
 
 ## Communication Channels
 - Sendblue (iMessage/SMS): Urgent alerts, mobile approvals, delivery tracking
@@ -553,6 +688,43 @@ export class MasterOrchestrator {
       savings: "intelligence-compliance",
       spend: "intelligence-compliance",
       report: "intelligence-compliance",
+
+      negotiate: "competitive-intelligence",
+      negotiation: "competitive-intelligence",
+      benchmark: "competitive-intelligence",
+      alternative: "competitive-intelligence",
+      "due diligence": "competitive-intelligence",
+      duplicate: "competitive-intelligence",
+      tariff: "competitive-intelligence",
+      "trade policy": "competitive-intelligence",
+
+      help: "intake-automation",
+      "how do i": "intake-automation",
+      concierge: "intake-automation",
+      "fill out": "intake-automation",
+      autofill: "intake-automation",
+
+      gdpr: "regulatory-compliance",
+      privacy: "regulatory-compliance",
+      dora: "regulatory-compliance",
+      "export control": "regulatory-compliance",
+      itar: "regulatory-compliance",
+      grant: "regulatory-compliance",
+      irb: "regulatory-compliance",
+      "human subjects": "regulatory-compliance",
+
+      stablecoin: "blockchain-payments",
+      crypto: "blockchain-payments",
+      blockchain: "blockchain-payments",
+      "smart contract": "blockchain-payments",
+      defi: "blockchain-payments",
+      yield: "blockchain-payments",
+      fraud: "blockchain-payments",
+
+      consortium: "network-consortium",
+      "group purchasing": "network-consortium",
+      "custom agent": "network-consortium",
+      "build agent": "network-consortium",
     };
 
     let selectedTeam = "procurement-pipeline"; // default
