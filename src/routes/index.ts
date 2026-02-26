@@ -13,3 +13,4 @@ export { default as agentRoutes } from "./agents";
 export { default as intelligenceRoutes } from "./intelligence";
 export { default as webhookRoutes } from "./webhooks";
 export { default as spendAnalyticsRoutes } from "./spendAnalytics";
+export { default as phase1AgentRoutes } from "./phase1-agents";
